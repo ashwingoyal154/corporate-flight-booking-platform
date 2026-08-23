@@ -31,13 +31,25 @@ const FORBIDDEN_KEYS = [
   'cardholdername',
 ];
 
-/** 13-19 digits, optionally separated — a payment card number shape. */
-const PAN_SHAPE = /\b(?:\d[ -]?){13,19}\b/;
+/**
+ * Card-number detection.
+ *
+ * Deliberately does NOT rely on \b word boundaries. An underscore is a word
+ * character, so `\b(?:\d[ -]?){13,19}\b` never matches the digits in
+ * `tok_4111111111111111` — which let a raw PAN through inside an
+ * innocent-looking token. Found by the end-to-end suite; the service-level
+ * tests could not see it because they never exercised that field.
+ *
+ * Instead: pull out every maximal run of digits (tolerating single spaces or
+ * hyphens as separators) and Luhn-check every 13-19 digit window inside it.
+ * Luhn is what keeps ticket numbers, GSTINs and phone numbers from tripping it.
+ */
+const DIGIT_RUN = /\d(?:[ -]?\d){12,}/g;
 
-function looksLikePan(value: string): boolean {
-  const digits = value.replace(/[ -]/g, '');
-  if (!/^\d{13,19}$/.test(digits)) return false;
-  // Luhn — avoids flagging long non-card digit strings.
+/** Longest run we will scan windows within — bounds the work on huge inputs. */
+const MAX_RUN_DIGITS = 32;
+
+function luhnValid(digits: string): boolean {
   let sum = 0;
   let double = false;
   for (let i = digits.length - 1; i >= 0; i--) {
@@ -52,6 +64,21 @@ function looksLikePan(value: string): boolean {
   return sum % 10 === 0;
 }
 
+export function containsPan(value: string): boolean {
+  for (const match of value.matchAll(DIGIT_RUN)) {
+    const digits = match[0].replace(/[ -]/g, '');
+    if (digits.length < 13 || digits.length > MAX_RUN_DIGITS) continue;
+
+    for (let len = 13; len <= 19; len++) {
+      if (len > digits.length) break;
+      for (let start = 0; start + len <= digits.length; start++) {
+        if (luhnValid(digits.slice(start, start + len))) return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function assertNoCardData(payload: unknown, path = '$'): void {
   const offenders: string[] = [];
   walk(payload, path, offenders);
@@ -62,7 +89,7 @@ function walk(node: unknown, path: string, offenders: string[]): void {
   if (node === null || node === undefined) return;
 
   if (typeof node === 'string') {
-    if (PAN_SHAPE.test(node) && looksLikePan(node)) offenders.push(path);
+    if (containsPan(node)) offenders.push(path);
     return;
   }
   if (typeof node === 'number') return;
@@ -82,9 +109,18 @@ function walk(node: unknown, path: string, offenders: string[]): void {
   }
 }
 
-/** Provider-issued tokens only. */
+/**
+ * Provider-issued tokens only.
+ *
+ * The shape check is not enough on its own: a caller can prefix a real card
+ * number with `tok_` and satisfy it. So the token is scanned for a PAN too —
+ * a token that contains a card number is card data, whatever it is called.
+ */
 export function assertPaymentToken(token: unknown): asserts token is string {
   if (typeof token !== 'string' || !token.startsWith('tok_') || token.length < 12) {
+    throw new CardDataRejectedError(['paymentToken']);
+  }
+  if (containsPan(token)) {
     throw new CardDataRejectedError(['paymentToken']);
   }
 }

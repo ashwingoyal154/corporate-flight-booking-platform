@@ -32,7 +32,7 @@ npm run dev:web       # terminal 2 — UI on :5173, proxies /api to :3000
 ```
 
 ```bash
-npm test              # 181 tests
+npm test              # 218 tests
 npm run typecheck
 ```
 
@@ -173,7 +173,7 @@ src/
     gate.ts              GSTIN hard-block, place-of-supply check
     invoices.ts          airline + agent invoice capture
   store/                 JSON-file persistence + seeded config
-tests/                   181 tests, organised by requirement ID
+tests/                   218 tests, organised by requirement ID
 ```
 
 Money is **integer paise** throughout — GST arithmetic feeds an input-tax-credit claim that finance
@@ -201,8 +201,34 @@ Each suite is named for the requirement it proves.
 | `stage3-reporting.test.ts` | `FR-RPT-1/2/3`, `FR-SVC-3`, `FR-GST-4` |
 | `stage4-policy.test.ts` | `FR-POL-2`, `FR-POL-3` — soft vs hard, and no provider call on a block |
 | `stage4-finance.test.ts` | `FR-BOOK-1`, `FR-RPT-4`, `FR-RPT-5`, `FR-GST-6` |
+| `e2e-journeys.test.ts` | Full journeys over the real HTTP API — every constraint re-proved at the route boundary, not just in services |
+| `ui-api-contract.test.ts` | Every endpoint the UI calls is routed; the built bundle is served and contains the screens the demo depends on |
 
 ---
+
+## Testing
+
+218 tests in three layers:
+
+- **Service tests** pin each requirement in isolation (`CON-1`, `FR-GST-1`, `CON-12`, …).
+- **End-to-end journeys** drive the real HTTP API through complete flows — search → hold → book →
+  retrieve → cancel — and re-prove every constraint at the route boundary. A rule enforced in a
+  service but bypassable through a route is not enforced at all.
+- **UI ↔ API contract** reads the endpoint list out of `web/src/api.ts` and asserts the server routes
+  every one, then checks the built bundle is served and still contains the screens the demo relies on.
+
+The end-to-end layer earned its place immediately by finding a real security defect: a payment token
+of the form `tok_4111111111111111` was **accepted**. The card-data scanner used a `\b` word boundary,
+and `_` is a word character, so the digits after the underscore never matched. The detector now pulls
+out every digit run regardless of boundaries and Luhn-checks each 13–19 digit window; `assertPaymentToken`
+scans the token itself, because a token containing a card number is card data whatever it is called.
+Both cases are pinned by regression tests.
+
+### Not covered
+
+There is **no browser-level UI test**. The bundle is verified to build, serve, and contain the expected
+screens, and every API call it makes is exercised end-to-end — but nobody has automated a click
+through the React app. Treat the UI as manually verified.
 
 ## Grounding and caveats
 

@@ -43,6 +43,21 @@ describe('CON-13 — card data is rejected, not sanitised', () => {
     );
   });
 
+  it('REGRESSION: catches a PAN hidden after an underscore', () => {
+    // Word boundaries do not fire between "_" and a digit, so the original
+    // detector missed this entirely and the API accepted it. Found by the E2E
+    // suite, not by the service tests.
+    expect(() => assertNoCardData({ paymentToken: 'tok_4111111111111111' })).toThrow(
+      CardDataRejectedError,
+    );
+    expect(() => assertPaymentToken('tok_4111111111111111')).toThrow(CardDataRejectedError);
+  });
+
+  it('REGRESSION: catches a PAN embedded mid-string with no separators', () => {
+    expect(() => assertNoCardData({ note: 'ref4111111111111111end' })).toThrow(CardDataRejectedError);
+    expect(() => assertNoCardData({ note: 'x5500005555555559' })).toThrow(CardDataRejectedError);
+  });
+
   it('does NOT false-positive on long non-card digit strings', () => {
     // A GSTIN, a phone number and a PNR must all pass.
     expect(() =>
