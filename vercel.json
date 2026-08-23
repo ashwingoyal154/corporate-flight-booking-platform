@@ -1,0 +1,19 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build:web",
+  "outputDirectory": "dist/web",
+  "functions": {
+    "api/[...path].ts": {
+      "memory": 1024,
+      "maxDuration": 15
+    }
+  },
+  "rewrites": [
+    {
+      "//": "SPA fallback for client-side routes. Excludes /api and /assets so the function and the CDN keep their paths.",
+      "source": "/((?!api/|assets/|favicon).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "regions": ["bom1"]
+}

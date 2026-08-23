@@ -53,9 +53,21 @@ const EMPTY: Db = {
 
 export class Store {
   private db: Db;
+  /**
+   * Serverless hosts (Vercel, Lambda) have a read-only filesystem and no
+   * durable local disk, so file persistence is not merely slow there — it
+   * throws. In memory mode the store keeps state in the process only.
+   *
+   * The honest consequence: state lives as long as the warm instance and is not
+   * shared between instances. Fine for a single-user demo; the reason a real
+   * deployment needs a database or KV store behind this same interface.
+   */
+  private readonly memoryOnly: boolean;
 
-  constructor(private readonly file: string) {
-    if (existsSync(file)) {
+  constructor(private readonly file: string, memoryOnly = false) {
+    this.memoryOnly = memoryOnly;
+
+    if (!memoryOnly && existsSync(file)) {
       try {
         this.db = { ...EMPTY, ...JSON.parse(readFileSync(file, 'utf8')) };
       } catch {
@@ -67,8 +79,14 @@ export class Store {
   }
 
   private flush(): void {
+    if (this.memoryOnly) return;
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileSync(this.file, JSON.stringify(this.db, null, 2));
+  }
+
+  /** True when nothing has been configured yet — used to self-seed on cold start. */
+  isEmpty(): boolean {
+    return this.db.organisation === null;
   }
 
   // --- organisation ---------------------------------------------------------
@@ -197,4 +215,11 @@ export const DB_FILE =
   process.env['DB_FILE'] ??
   resolve(process.cwd(), 'data', workerId ? `db.test.${workerId}.json` : 'db.json');
 
-export const store = new Store(DB_FILE);
+/**
+ * Memory mode is forced on serverless platforms, where the filesystem is
+ * read-only. `STORE_MODE=memory` selects it explicitly anywhere else.
+ */
+export const MEMORY_ONLY =
+  process.env['STORE_MODE'] === 'memory' || Boolean(process.env['VERCEL']);
+
+export const store = new Store(DB_FILE, MEMORY_ONLY);

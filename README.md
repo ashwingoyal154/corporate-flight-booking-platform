@@ -32,7 +32,7 @@ npm run dev:web       # terminal 2 — UI on :5173, proxies /api to :3000
 ```
 
 ```bash
-npm test              # 242 tests
+npm test              # 248 tests
 npm run typecheck
 ```
 
@@ -173,7 +173,7 @@ src/
     gate.ts              GSTIN hard-block, place-of-supply check
     invoices.ts          airline + agent invoice capture
   store/                 JSON-file persistence + seeded config
-tests/                   242 tests, organised by requirement ID
+tests/                   248 tests, organised by requirement ID
 ```
 
 Money is **integer paise** throughout — GST arithmetic feeds an input-tax-credit claim that finance
@@ -204,12 +204,13 @@ Each suite is named for the requirement it proves.
 | `e2e-journeys.test.ts` | Full journeys over the real HTTP API — every constraint re-proved at the route boundary, not just in services |
 | `ui-api-contract.test.ts` | Every endpoint the UI calls is routed; the built bundle is served and contains the screens the demo depends on |
 | `admin-gate.test.ts` | The admin surface is token-gated while the booking journey stays public; production refuses to boot without a token |
+| `serverless-store.test.ts` | Memory mode never touches the filesystem, still behaves like a store, and file mode still persists |
 
 ---
 
 ## Testing
 
-242 tests in three layers:
+248 tests in three layers:
 
 - **Service tests** pin each requirement in isolation (`CON-1`, `FR-GST-1`, `CON-12`, …).
 - **End-to-end journeys** drive the real HTTP API through complete flows — search → hold → book →
@@ -256,6 +257,30 @@ forgetting it is a silent and total failure.
 
 Locally, with no `ADMIN_TOKEN` set, the gate stays open so development is frictionless. `/api/health`
 reports `adminGated` so the UI knows whether to prompt.
+
+### Vercel (config included)
+
+```bash
+npx vercel login
+npx vercel --prod
+```
+
+Then set the admin token — the deploy will refuse to serve admin routes without it:
+
+```bash
+npx vercel env add ADMIN_TOKEN production   # paste: openssl rand -hex 24
+npx vercel --prod                           # redeploy so it takes effect
+```
+
+Two things about Vercel specifically, because it is serverless rather than a long-lived server:
+
+- **The filesystem is read-only**, so the store runs in **memory mode** (`MEMORY_ONLY` in
+  `src/store/store.ts`), seeded lazily on each cold start. State lives as long as the warm instance
+  and is not shared between instances — fine for a demo with fabricated data, and precisely what a
+  database behind the same `Store` interface would fix.
+- The function is a **catch-all route** (`api/[...path].ts`), not a rewrite. A `rewrites` rule
+  pointing `/api/(.*)` at one function hands Express the *rewritten* URL, so every route misses and
+  everything 404s. The catch-all preserves the original path.
 
 ### Render (blueprint included)
 
