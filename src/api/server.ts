@@ -21,6 +21,7 @@ import { AIRPORTS } from '../supply/mock/fixtures.js';
 import { dashboard } from '../reporting/metrics.js';
 import { complianceReport, gstr2bCsv, gstr2bLines, spendReport } from '../reporting/finance.js';
 import { validateGstin } from '../domain/gstin.js';
+import { adminTokenConfigured, requireAdmin, requireAdminTokenInProduction } from './adminAuth.js';
 import type { FareOffer, Session } from '../domain/types.js';
 
 const provider = new MockAdapter();
@@ -103,7 +104,13 @@ function requireEntity(session: Session) {
 // --- routes ------------------------------------------------------------------
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, provider: provider.name, stage: '1-4' });
+  res.json({
+    ok: true,
+    provider: provider.name,
+    stage: '1-4',
+    // Lets the UI know to ask for an admin token before showing the console.
+    adminGated: adminTokenConfigured(),
+  });
 });
 
 app.get('/api/config', (_req, res) => {
@@ -387,8 +394,8 @@ app.get('/api/admin/alerts', (req, res) => {
   res.json({ alerts: store.listAlerts(includeAck) });
 });
 
-app.post('/api/admin/alerts/:id/acknowledge', (req, res) => {
-  store.acknowledgeAlert(req.params.id);
+app.post('/api/admin/alerts/:id/acknowledge', requireAdmin, (req, res) => {
+  store.acknowledgeAlert(String(req.params.id));
   res.json({ ok: true });
 });
 
@@ -442,7 +449,7 @@ app.get('/api/reports/gstr2b', (req, res) => {
  * NOTE (CON-10): there is no auth in v1, so these routes are unprotected.
  * They must be role-gated when identity lands in Stage 6.
  */
-app.get('/api/admin/config', (_req, res) => {
+app.get('/api/admin/config', requireAdmin, (_req, res) => {
   const org = store.getOrganisation();
   res.json({
     organisation: { id: org.id, name: org.name },
@@ -467,7 +474,7 @@ const legalEntitySchema = z.object({
   address: z.string().min(1),
 });
 
-app.put('/api/admin/legal-entities/:id', (req, res, next) => {
+app.put('/api/admin/legal-entities/:id', requireAdmin, (req, res, next) => {
   try {
     const entity = legalEntitySchema.parse({ ...req.body, id: req.params.id });
     // FR-ORG-1 — positional GSTIN validation at entry, because it cannot be
@@ -505,7 +512,7 @@ const corporateConfigSchema = z.object({
   activeTo: z.string().optional(),
 });
 
-app.put('/api/admin/corporate-fare-configs/:carrier', (req, res, next) => {
+app.put('/api/admin/corporate-fare-configs/:carrier', requireAdmin, (req, res, next) => {
   try {
     const cfg = corporateConfigSchema.parse({ ...req.body, carrier: req.params.carrier });
     // CON-3: the search-time code and the ticket-time tour code are different
@@ -529,14 +536,14 @@ app.put('/api/admin/corporate-fare-configs/:carrier', (req, res, next) => {
   }
 });
 
-app.delete('/api/admin/corporate-fare-configs/:carrier', (req, res) => {
+app.delete('/api/admin/corporate-fare-configs/:carrier', requireAdmin, (req, res) => {
   const org = store.getOrganisation();
   org.corporateFareConfigs = org.corporateFareConfigs.filter((c) => c.carrier !== req.params.carrier);
   store.setOrganisation(org);
   res.json({ ok: true });
 });
 
-app.put('/api/admin/projects/:code', (req, res, next) => {
+app.put('/api/admin/projects/:code', requireAdmin, (req, res, next) => {
   try {
     const project = z
       .object({
@@ -558,7 +565,7 @@ app.put('/api/admin/projects/:code', (req, res, next) => {
   }
 });
 
-app.put('/api/admin/cost-centres/:code', (req, res, next) => {
+app.put('/api/admin/cost-centres/:code', requireAdmin, (req, res, next) => {
   try {
     const cc = z
       .object({ code: z.string().min(1), name: z.string().min(1), active: z.boolean() })
@@ -575,7 +582,7 @@ app.put('/api/admin/cost-centres/:code', (req, res, next) => {
 });
 
 /** FR-POL-2 / FR-POL-3 — the default policy is admin-editable. */
-app.put('/api/admin/policies/:id', (req, res, next) => {
+app.put('/api/admin/policies/:id', requireAdmin, (req, res, next) => {
   try {
     const policy = z
       .object({
@@ -597,7 +604,7 @@ app.put('/api/admin/policies/:id', (req, res, next) => {
 });
 
 /** Failure injection, so Stage 2 behaviour can actually be demonstrated. */
-app.post('/api/mock/control', (req, res) => {
+app.post('/api/mock/control', requireAdmin, (req, res) => {
   const body = z
     .object({
       action: z.enum(['failLeg', 'priceDelta', 'dropBookResponse', 'latency', 'reset']),
@@ -667,6 +674,10 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 const PORT = Number(process.env['PORT'] ?? 3000);
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  // A production start without ADMIN_TOKEN would silently serve an open admin
+  // surface, so refuse rather than warn.
+  requireAdminTokenInProduction();
+
   try {
     store.getOrganisation();
   } catch {
@@ -676,6 +687,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   app.listen(PORT, () => {
     console.log(`Corporate flight booking API on http://localhost:${PORT}`);
     console.log(`Provider: ${provider.name} (DEC-1 unresolved — mock supply)`);
+    console.log(
+      adminTokenConfigured()
+        ? 'Admin routes: gated by ADMIN_TOKEN'
+        : 'Admin routes: OPEN (no ADMIN_TOKEN set — local development only)',
+    );
   });
 }
 

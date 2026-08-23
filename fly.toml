@@ -1,0 +1,32 @@
+# Fly.io — deploy with:
+#   fly launch --no-deploy --copy-config
+#   fly secrets set ADMIN_TOKEN="$(openssl rand -hex 24)"
+#   fly deploy
+app = "corporate-flight-booking"
+primary_region = "bom"   # Mumbai — the users are in India
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  # Scale to zero when idle; a demo does not need a warm machine.
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

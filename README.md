@@ -19,20 +19,20 @@ This repo is a **runnable prototype covering stages 1–4** of [`plan.md`](./pla
 
 ```bash
 npm install
+npm run build         # compiles the server and builds the UI
 npm run seed          # writes the seeded organisation config to data/db.json
-npm run build:web     # build the UI
 npm start             # http://localhost:3000
 ```
 
 For UI development with hot reload, run the API and Vite separately:
 
 ```bash
-npm start             # terminal 1 — API on :3000
+npm run start:dev     # terminal 1 — API on :3000, via tsx, no build step
 npm run dev:web       # terminal 2 — UI on :5173, proxies /api to :3000
 ```
 
 ```bash
-npm test              # 218 tests
+npm test              # 242 tests
 npm run typecheck
 ```
 
@@ -173,7 +173,7 @@ src/
     gate.ts              GSTIN hard-block, place-of-supply check
     invoices.ts          airline + agent invoice capture
   store/                 JSON-file persistence + seeded config
-tests/                   218 tests, organised by requirement ID
+tests/                   242 tests, organised by requirement ID
 ```
 
 Money is **integer paise** throughout — GST arithmetic feeds an input-tax-credit claim that finance
@@ -203,12 +203,13 @@ Each suite is named for the requirement it proves.
 | `stage4-finance.test.ts` | `FR-BOOK-1`, `FR-RPT-4`, `FR-RPT-5`, `FR-GST-6` |
 | `e2e-journeys.test.ts` | Full journeys over the real HTTP API — every constraint re-proved at the route boundary, not just in services |
 | `ui-api-contract.test.ts` | Every endpoint the UI calls is routed; the built bundle is served and contains the screens the demo depends on |
+| `admin-gate.test.ts` | The admin surface is token-gated while the booking journey stays public; production refuses to boot without a token |
 
 ---
 
 ## Testing
 
-218 tests in three layers:
+242 tests in three layers:
 
 - **Service tests** pin each requirement in isolation (`CON-1`, `FR-GST-1`, `CON-12`, …).
 - **End-to-end journeys** drive the real HTTP API through complete flows — search → hold → book →
@@ -229,6 +230,67 @@ Both cases are pinned by regression tests.
 There is **no browser-level UI test**. The bundle is verified to build, serve, and contain the expected
 screens, and every API call it makes is exercised end-to-end — but nobody has automated a click
 through the React app. Treat the UI as manually verified.
+
+## Deploying
+
+The app is a single Node process serving both the API and the built UI, so any
+container host works. A `Dockerfile` is included, plus blueprints for two hosts.
+
+### The one thing you must set: `ADMIN_TOKEN`
+
+`CON-10` says v1 has no authentication, and for the **booking journey** that is fine — a booking is
+scoped to a session and exposes nothing but itself. It is **not** fine for the **admin surface**.
+Served openly, any visitor could delete the corporate fare configuration, rewrite travel policy, or
+pull the whole GST ledger — and break the app for everyone else.
+
+So mutating admin routes and the demo failure controls require an `x-admin-token` header matching
+`ADMIN_TOKEN`. **With `NODE_ENV=production` the server refuses to start without one**, because
+forgetting it is a silent and total failure.
+
+| Surface | Public | Needs token |
+|---|---|---|
+| Search, hold, book, retrieve, cancel | ✅ | — |
+| Reports dashboard, leg health | ✅ | — |
+| Admin config read/write, policy, projects, entities | — | ✅ |
+| Demo failure injection (`/api/mock/control`) | — | ✅ |
+
+Locally, with no `ADMIN_TOKEN` set, the gate stays open so development is frictionless. `/api/health`
+reports `adminGated` so the UI knows whether to prompt.
+
+### Render (blueprint included)
+
+Push the repo, then **New → Blueprint** and point it at `render.yaml`. Render generates `ADMIN_TOKEN`
+itself — read it from the dashboard to unlock the admin console.
+
+### Fly.io
+
+```bash
+fly launch --no-deploy --copy-config
+fly secrets set ADMIN_TOKEN="$(openssl rand -hex 24)"
+fly deploy
+```
+
+`fly.toml` sets the primary region to Mumbai (`bom`) and scales to zero when idle.
+
+### Any Docker host
+
+```bash
+docker build -t corporate-flight-booking .
+docker run -p 3000:3000 \
+  -e NODE_ENV=production \
+  -e ADMIN_TOKEN="$(openssl rand -hex 24)" \
+  corporate-flight-booking
+```
+
+### Data persistence
+
+State lives in `data/db.json`. On an ephemeral container filesystem it resets on every redeploy —
+which for a shared demo is a feature, not a bug: each deploy starts from clean seeded data. Mount a
+volume at `/app/data` if you want it to survive.
+
+Note that the demo's state is **shared across visitors**: two people using the deployed link see each
+other's bookings in Reports. That is acceptable for a demo with fabricated data, and it is exactly
+what per-user isolation would fix once authentication lands (Stage 6).
 
 ## Grounding and caveats
 

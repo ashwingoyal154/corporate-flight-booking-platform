@@ -3,16 +3,20 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Corporate flight booking self-booking tool — stages 1-4 (mock supply)",
+  "description": "Corporate flight booking self-booking tool \u2014 stages 1-4 (mock supply)",
   "scripts": {
     "dev": "tsx watch src/api/server.ts",
-    "start": "tsx src/api/server.ts",
+    "start": "node dist/server/api/server.js",
     "build:web": "vite build",
     "dev:web": "vite",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed": "tsx src/store/seed.ts",
-    "typecheck": "tsc --noEmit"
+    "seed": "node dist/server/store/seed.js",
+    "typecheck": "tsc --noEmit",
+    "start:dev": "tsx src/api/server.ts",
+    "build": "npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.build.json",
+    "seed:dev": "tsx src/store/seed.ts"
   },
   "dependencies": {
     "express": "^4.21.2",
@@ -30,5 +34,8 @@
     "typescript": "^5.7.3",
     "vite": "^6.0.7",
     "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // NodeNext (not "bundler") because this config actually EMITS JavaScript
+    // that Node runs directly. Source imports already carry .js extensions, so
+    // they resolve correctly as ESM without a bundler in the loop.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "noEmit": false,
+    "outDir": "dist/server",
+    "rootDir": "src",
+    "sourceMap": true,
+    "declaration": false
+  },
+  "include": ["src"],
+  "exclude": ["web", "tests", "vite.config.ts", "vitest.config.ts"]
+}

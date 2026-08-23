@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ApiFailure, api, inr, timeOf } from './api.js';
+import { ApiFailure, api, getAdminToken, inr, setAdminToken, timeOf } from './api.js';
 
 type View = 'search' | 'results' | 'checkout' | 'confirmed' | 'bookings' | 'reports' | 'admin' | 'ops';
 
@@ -27,6 +27,7 @@ function Err({ e }: { e: ApiFailure | null }) {
 export function App() {
   const [view, setView] = useState<View>('search');
   const [config, setConfig] = useState<any>(null);
+  const [health, setHealth] = useState<any>(null);
   const [entity, setEntity] = useState<any>(null);
   const [error, setError] = useState<ApiFailure | null>(null);
 
@@ -46,6 +47,7 @@ export function App() {
   useEffect(() => {
     (async () => {
       try {
+        setHealth(await api.health());
         const cfg = await api.config();
         setConfig(cfg);
         try {
@@ -150,10 +152,10 @@ export function App() {
 
       {view === 'bookings' && <BookingsView onError={setError} />}
       {view === 'reports' && <ReportsView />}
-      {view === 'admin' && <AdminView onError={setError} />}
+      {view === 'admin' && <AdminView onError={setError} gated={health?.adminGated} />}
       {view === 'ops' && <OpsView />}
 
-      <DevBar onReset={() => setResult(null)} />
+      <DevBar onReset={() => setResult(null)} gated={health?.adminGated} />
     </div>
   );
 }
@@ -965,8 +967,25 @@ function OpsView() {
 }
 
 /** Failure injection, so the Stage 2 behaviours can actually be demonstrated. */
-function DevBar({ onReset }: { onReset: () => void }) {
-  const call = (payload: any) => api.mock(payload).catch(() => {});
+function DevBar({ onReset, gated }: { onReset: () => void; gated?: boolean }) {
+  const [blocked, setBlocked] = useState(false);
+  const call = (payload: any) =>
+    api.mock(payload).catch((e) => {
+      if (e instanceof ApiFailure && e.status === 401) setBlocked(true);
+    });
+
+  if (gated && blocked) {
+    return (
+      <div className="devbar">
+        <div className="inner">
+          <span className="small muted">
+            Demo failure controls are admin-gated on this deployment — unlock the Admin tab with a token
+            to use them.
+          </span>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="devbar">
       <div className="inner">
@@ -1196,8 +1215,10 @@ function Stat({ label, value, sub, good }: any) {
  * NOTE (CON-10): there is no auth in v1, so this console is unprotected. It
  * must be role-gated when identity lands in Stage 6.
  */
-function AdminView({ onError }: any) {
+function AdminView({ onError, gated }: any) {
   const [cfg, setCfg] = useState<any>(null);
+  const [tokenInput, setTokenInput] = useState(getAdminToken());
+  const [denied, setDenied] = useState(false);
   const [spend, setSpend] = useState<any>(null);
   const [compliance, setCompliance] = useState<any>(null);
   const [draft, setDraft] = useState<any>({
@@ -1209,14 +1230,57 @@ function AdminView({ onError }: any) {
   });
 
   const load = useCallback(async () => {
-    setCfg(await api.adminConfig());
-    setSpend(await api.spend());
-    setCompliance(await api.compliance());
-  }, []);
+    try {
+      setCfg(await api.adminConfig());
+      setSpend(await api.spend());
+      setCompliance(await api.compliance());
+      setDenied(false);
+    } catch (e) {
+      if (e instanceof ApiFailure && e.status === 401) setDenied(true);
+      else if (e instanceof ApiFailure) onError(e);
+    }
+  }, [onError]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Deployed publicly, the admin surface is token-gated: without it any visitor
+  // could delete the corporate fare configs or rewrite policy for everyone else.
+  if (denied || (gated && !cfg)) {
+    return (
+      <div className="card">
+        <h2>Admin access</h2>
+        <p className="small muted">
+          This deployment is public, so the admin console is gated. The booking journey needs no token;
+          this console does, because a visitor could otherwise delete the corporate fare configuration
+          for everyone.
+        </p>
+        <div className="row">
+          <div style={{ flex: 1 }}>
+            <label>Admin token</label>
+            <input
+              type="password"
+              style={{ width: '100%' }}
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              placeholder="x-admin-token"
+            />
+          </div>
+          <button
+            className="primary"
+            onClick={() => {
+              setAdminToken(tokenInput.trim());
+              load();
+            }}
+          >
+            Unlock
+          </button>
+        </div>
+        {denied && <div className="banner error" style={{ marginTop: 12 }}>That token was rejected.</div>}
+      </div>
+    );
+  }
 
   if (!cfg) return <div className="card muted">Loading…</div>;
 

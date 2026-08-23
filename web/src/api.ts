@@ -11,11 +11,45 @@ export class ApiFailure extends Error {
   }
 }
 
+/**
+ * Admin token for deployed environments.
+ *
+ * The booking journey is public by design; the admin surface is not. When the
+ * server reports `adminGated`, the console asks for this token and sends it on
+ * every admin request. Held per-browser only — it is never a session cookie and
+ * never travels with an ordinary booking call.
+ */
+const ADMIN_TOKEN_KEY = 'cfb.adminToken';
+
+export function getAdminToken(): string {
+  try {
+    return localStorage.getItem(ADMIN_TOKEN_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function setAdminToken(token: string): void {
+  try {
+    if (token) localStorage.setItem(ADMIN_TOKEN_KEY, token);
+    else localStorage.removeItem(ADMIN_TOKEN_KEY);
+  } catch {
+    /* private browsing — the token simply will not persist */
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const isAdmin = path.startsWith('/api/admin') || path.startsWith('/api/mock');
+  const adminToken = isAdmin ? getAdminToken() : '';
+
   const res = await fetch(path, {
     ...init,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(adminToken ? { 'x-admin-token': adminToken } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   const body = await res.json().catch(() => ({ error: 'Unreadable response', code: 'PARSE' }));
   if (!res.ok) throw new ApiFailure(body as ApiError, res.status);
@@ -23,6 +57,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  health: () => request<any>('/api/health'),
   config: () => request<any>('/api/config'),
   startSession: (legalEntityId?: string) =>
     request<any>('/api/session', { method: 'POST', body: JSON.stringify({ legalEntityId }) }),
