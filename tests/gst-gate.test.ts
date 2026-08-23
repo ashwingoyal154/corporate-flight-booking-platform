@@ -6,7 +6,7 @@ import { BookingService } from '../src/booking/bookingService.js';
 import { createHold } from '../src/booking/hold.js';
 import { issueMockToken } from '../src/booking/payment.js';
 import { store } from '../src/store/store.js';
-import { criteria, entityFor, makeSession, newOrchestrator, PASSENGER, resetWorld } from './helpers.js';
+import { criteria, entityFor, makeSession, newOrchestrator, PASSENGER, resetWorld, ALLOCATION, pickBookable} from './helpers.js';
 
 /**
  * FR-GST-1 / FR-GST-2 / CON-4 — the highest-ROI requirement in the product.
@@ -122,6 +122,7 @@ describe('FR-GST-1 — booking is hard-blocked without valid GST details', () =>
         entity: store.getLegalEntity(entity.id)!,
         passengers: [PASSENGER],
         paymentToken: issueMockToken(),
+        allocation: ALLOCATION,
         idempotencyKey: 'idem_gst_block',
       }),
     ).rejects.toThrow(GstRequiredError);
@@ -152,7 +153,7 @@ describe('FR-GST-2 — GST details are pre-filled from config, never traveller-e
     const session = makeSession();
     const entity = entityFor(session);
     const result = await orchestrator.search(criteria());
-    const hold = createHold(result.offers[0]!, session.id);
+    const hold = createHold(pickBookable(result), session.id);
     const service = new BookingService(provider);
     const { booking } = await service.book({
       holdId: hold.id,
@@ -160,6 +161,7 @@ describe('FR-GST-2 — GST details are pre-filled from config, never traveller-e
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       idempotencyKey: 'idem_gst_persist',
     });
     expect(booking.gst.gstin).toBe(entity.gstin);

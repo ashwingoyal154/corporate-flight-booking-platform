@@ -18,6 +18,9 @@ import { checkPlaceOfSupply } from '../gst/gate.js';
 import { DomainError, NotFoundError } from '../domain/errors.js';
 import { id } from '../domain/ids.js';
 import { AIRPORTS } from '../supply/mock/fixtures.js';
+import { dashboard } from '../reporting/metrics.js';
+import { complianceReport, gstr2bCsv, gstr2bLines, spendReport } from '../reporting/finance.js';
+import { validateGstin } from '../domain/gstin.js';
 import type { FareOffer, Session } from '../domain/types.js';
 
 const provider = new MockAdapter();
@@ -123,6 +126,10 @@ app.get('/api/config', (_req, res) => {
       hasTourCode: Boolean(c.tourCode),
     })),
     gstRates: org.gstRates,
+    rankingPolicy: org.rankingPolicy,
+    costCentres: org.costCentres.filter((c) => c.active),
+    projects: org.projects.filter((p) => p.active),
+    policies: org.policies,
     airports: AIRPORTS,
   });
 });
@@ -258,8 +265,28 @@ app.post('/api/bookings', async (req, res, next) => {
         paymentToken: z.string(),
         acceptedTotal: z.number().optional(),
         idempotencyKey: z.string().min(8).optional(),
+        // FR-DISP-4 — required when declining an available corporate fare.
+        retailOverCorporateReason: z.string().min(3).optional(),
+        // FR-BOOK-1 — allocation is mandatory.
+        allocation: z.object({
+          projectCode: z.string().min(1),
+          costCentreCode: z.string().min(1),
+          clientBillable: z.boolean(),
+        }),
+        // FR-POL-3 — required on a soft policy breach.
+        policyJustification: z.string().min(3).optional(),
       })
       .parse(req.body);
+
+    // FR-ORG-4 — allocation codes must exist and be active, or the spend
+    // report and the client rebill are built on free text.
+    const org = store.getOrganisation();
+    const project = org.projects.find((p) => p.code === body.allocation.projectCode && p.active);
+    const costCentre = org.costCentres.find(
+      (c) => c.code === body.allocation.costCentreCode && c.active,
+    );
+    if (!project) throw new NotFoundError('Active project', body.allocation.projectCode);
+    if (!costCentre) throw new NotFoundError('Active cost centre', body.allocation.costCentreCode);
 
     const idempotencyKey =
       body.idempotencyKey ?? (req.header('Idempotency-Key') || `idem_${randomUUID()}`);
@@ -271,6 +298,11 @@ app.post('/api/bookings', async (req, res, next) => {
       passengers: body.passengers,
       paymentToken: body.paymentToken,
       ...(body.acceptedTotal !== undefined ? { acceptedTotal: body.acceptedTotal } : {}),
+      ...(body.retailOverCorporateReason
+        ? { retailOverCorporateReason: body.retailOverCorporateReason }
+        : {}),
+      allocation: body.allocation,
+      ...(body.policyJustification ? { policyJustification: body.policyJustification } : {}),
       idempotencyKey,
     });
 
@@ -360,18 +392,208 @@ app.post('/api/admin/alerts/:id/acknowledge', (req, res) => {
   res.json({ ok: true });
 });
 
-/** Corporate query health (FR-SRCH-4 telemetry; full dashboard is Stage 3). */
+/**
+ * Reporting dashboard — FR-RPT-1, FR-RPT-2, FR-RPT-3, FR-RPT-6, FR-SVC-3.
+ *
+ * Every figure is computed from stored booking evidence, never from a vendor
+ * percentage: research.md §6.2 found no credible published discount figure for
+ * Indian corporate fares, so the only number worth trusting is the observed one.
+ */
+app.get('/api/reports/dashboard', (_req, res) => {
+  res.json(dashboard(store.listBookings(), store.listLegTelemetry()));
+});
+
 app.get('/api/admin/leg-health', (_req, res) => {
-  const rows = store.listLegTelemetry();
-  const byKey = new Map<string, { carrier: string; fareType: string; outcomes: Record<string, number>; total: number }>();
-  for (const r of rows) {
-    const key = `${r.carrier}:${r.fareType}`;
-    const entry = byKey.get(key) ?? { carrier: r.carrier, fareType: r.fareType, outcomes: {}, total: 0 };
-    entry.outcomes[r.outcome] = (entry.outcomes[r.outcome] ?? 0) + 1;
-    entry.total += 1;
-    byKey.set(key, entry);
+  const d = dashboard(store.listBookings(), store.listLegTelemetry());
+  res.json({ legs: d.legs, sampleCount: store.listLegTelemetry().length });
+});
+
+// --- Stage 4: finance & compliance reporting -------------------------------
+
+/** FR-RPT-4 — spend by project, cost centre and billability. */
+app.get('/api/reports/spend', (_req, res) => {
+  res.json(spendReport(store.listBookings(), store.getOrganisation()));
+});
+
+/** FR-RPT-5 — policy compliance rate and recorded justifications. */
+app.get('/api/reports/compliance', (_req, res) => {
+  res.json(complianceReport(store.listBookings()));
+});
+
+/** FR-GST-6 — a ledger finance reconciles line-by-line against GSTR-2B. */
+app.get('/api/reports/gstr2b', (req, res) => {
+  const lines = gstr2bLines(store.listBookings());
+  if (req.query['format'] === 'csv') {
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="gstr2b-reconciliation.csv"');
+    return res.send(gstr2bCsv(lines));
   }
-  res.json({ legs: [...byKey.values()], sampleCount: rows.length });
+  res.json({ lines, count: lines.length });
+});
+
+// --- Stage 4: admin configuration (FR-ORG-1, FR-ORG-2, FR-ORG-4) -----------
+
+/**
+ * Config is editable by a travel admin without an engineer or a deploy — the
+ * point of Stage 4. CON-7 in particular: a new carrier corporate code must be
+ * a config change, because both the supply partner (DEC-1) and the sourcing
+ * model (DEC-3) are still open.
+ *
+ * NOTE (CON-10): there is no auth in v1, so these routes are unprotected.
+ * They must be role-gated when identity lands in Stage 6.
+ */
+app.get('/api/admin/config', (_req, res) => {
+  const org = store.getOrganisation();
+  res.json({
+    organisation: { id: org.id, name: org.name },
+    legalEntities: org.legalEntities,
+    corporateFareConfigs: org.corporateFareConfigs,
+    costCentres: org.costCentres,
+    projects: org.projects,
+    policies: org.policies,
+    gstRates: org.gstRates,
+    rankingPolicy: org.rankingPolicy,
+    serviceFeePerBooking: org.serviceFeePerBooking,
+  });
+});
+
+const legalEntitySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  gstin: z.string(),
+  registeredName: z.string().min(1),
+  stateCode: z.string().length(2),
+  invoiceEmail: z.string().email(),
+  address: z.string().min(1),
+});
+
+app.put('/api/admin/legal-entities/:id', (req, res, next) => {
+  try {
+    const entity = legalEntitySchema.parse({ ...req.body, id: req.params.id });
+    // FR-ORG-1 — positional GSTIN validation at entry, because it cannot be
+    // corrected after a ticket is issued (CON-4).
+    const v = validateGstin(entity.gstin);
+    if (!v.valid) {
+      throw new DomainError('Invalid GSTIN', 'INVALID_GSTIN', 'FR-ORG-1', 422, { errors: v.errors });
+    }
+    if (v.stateCode !== entity.stateCode) {
+      throw new DomainError(
+        `GSTIN state prefix ${v.stateCode} does not match the declared state code ${entity.stateCode}.`,
+        'GSTIN_STATE_MISMATCH',
+        'FR-ORG-1',
+        422,
+      );
+    }
+    const org = store.getOrganisation();
+    const idx = org.legalEntities.findIndex((e) => e.id === entity.id);
+    if (idx >= 0) org.legalEntities[idx] = entity;
+    else org.legalEntities.push(entity);
+    store.setOrganisation(org);
+    res.json({ legalEntity: entity });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const corporateConfigSchema = z.object({
+  carrier: z.enum(['6E', 'AI', 'QP', 'SG']),
+  mechanism: z.enum(['CREDENTIAL', 'ACCOUNT_CODE', 'PROMO_CODE', 'CONTRACT_CODE']),
+  credentialRef: z.string().min(1),
+  code: z.string().optional(),
+  tourCode: z.string().optional(),
+  activeFrom: z.string(),
+  activeTo: z.string().optional(),
+});
+
+app.put('/api/admin/corporate-fare-configs/:carrier', (req, res, next) => {
+  try {
+    const cfg = corporateConfigSchema.parse({ ...req.body, carrier: req.params.carrier });
+    // CON-3: the search-time code and the ticket-time tour code are different
+    // things. A non-credential mechanism cannot retrieve anything without a code.
+    if (cfg.mechanism !== 'CREDENTIAL' && !cfg.code) {
+      throw new DomainError(
+        `Mechanism ${cfg.mechanism} needs a retrieval code; a tour code will not unlock a fare.`,
+        'MISSING_RETRIEVAL_CODE',
+        'CON-3',
+        422,
+      );
+    }
+    const org = store.getOrganisation();
+    const idx = org.corporateFareConfigs.findIndex((c) => c.carrier === cfg.carrier);
+    if (idx >= 0) org.corporateFareConfigs[idx] = cfg;
+    else org.corporateFareConfigs.push(cfg);
+    store.setOrganisation(org);
+    res.json({ corporateFareConfig: cfg });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/api/admin/corporate-fare-configs/:carrier', (req, res) => {
+  const org = store.getOrganisation();
+  org.corporateFareConfigs = org.corporateFareConfigs.filter((c) => c.carrier !== req.params.carrier);
+  store.setOrganisation(org);
+  res.json({ ok: true });
+});
+
+app.put('/api/admin/projects/:code', (req, res, next) => {
+  try {
+    const project = z
+      .object({
+        code: z.string().min(1),
+        name: z.string().min(1),
+        clientName: z.string().min(1),
+        clientBillable: z.boolean(),
+        active: z.boolean(),
+      })
+      .parse({ ...req.body, code: req.params.code });
+    const org = store.getOrganisation();
+    const idx = org.projects.findIndex((p) => p.code === project.code);
+    if (idx >= 0) org.projects[idx] = project;
+    else org.projects.push(project);
+    store.setOrganisation(org);
+    res.json({ project });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.put('/api/admin/cost-centres/:code', (req, res, next) => {
+  try {
+    const cc = z
+      .object({ code: z.string().min(1), name: z.string().min(1), active: z.boolean() })
+      .parse({ ...req.body, code: req.params.code });
+    const org = store.getOrganisation();
+    const idx = org.costCentres.findIndex((c) => c.code === cc.code);
+    if (idx >= 0) org.costCentres[idx] = cc;
+    else org.costCentres.push(cc);
+    store.setOrganisation(org);
+    res.json({ costCentre: cc });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** FR-POL-2 / FR-POL-3 — the default policy is admin-editable. */
+app.put('/api/admin/policies/:id', (req, res, next) => {
+  try {
+    const policy = z
+      .object({
+        id: z.string().min(1),
+        name: z.string().min(1),
+        isDefault: z.boolean(),
+        rules: z.array(z.any()),
+      })
+      .parse({ ...req.body, id: req.params.id });
+    const org = store.getOrganisation();
+    const idx = org.policies.findIndex((p) => p.id === policy.id);
+    if (idx >= 0) org.policies[idx] = policy as never;
+    else org.policies.push(policy as never);
+    store.setOrganisation(org);
+    res.json({ policy });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /** Failure injection, so Stage 2 behaviour can actually be demonstrated. */

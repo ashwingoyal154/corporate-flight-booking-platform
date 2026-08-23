@@ -1,4 +1,5 @@
 import type {
+  Allocation,
   Booking,
   FareOffer,
   GstSubmission,
@@ -12,7 +13,16 @@ import { assertNoMixedFareTypes } from './cart.js';
 import { consumeHold, requireLiveHold } from './hold.js';
 import { assertBookable, buildGstSubmission, checkPlaceOfSupply } from '../gst/gate.js';
 import { assertPaymentToken } from './payment.js';
-import { PriceChangedError, DomainError } from '../domain/errors.js';
+import {
+  JustificationRequiredError,
+  PolicyBlockedError,
+  PolicyJustificationRequiredError,
+  PriceChangedError,
+  DomainError,
+} from '../domain/errors.js';
+import { defaultPolicy, evaluateOffer } from '../policy/engine.js';
+import { buildInvoices } from '../gst/invoices.js';
+import { declinesCorporateFare } from '../search/ranking.js';
 import { bookingReference, correlationId, id } from '../domain/ids.js';
 import { store } from '../store/store.js';
 import { priceOffer } from '../search/pricing.js';
@@ -27,6 +37,15 @@ export interface BookParams {
   acceptedTotal?: number;
   /** Supplied by the client so a retry is the same logical booking (NFR-5). */
   idempotencyKey: string;
+  /**
+   * Required when the selected fare is retail and a corporate fare was
+   * available on the same flight (FR-DISP-4).
+   */
+  retailOverCorporateReason?: string;
+  /** Mandatory allocation (FR-BOOK-1). */
+  allocation: Allocation;
+  /** Required when the offer breaches policy softly (FR-POL-3). */
+  policyJustification?: string;
 }
 
 export class BookingService {
@@ -63,6 +82,34 @@ export class BookingService {
 
     // 5. CON-13
     assertPaymentToken(params.paymentToken);
+
+    /**
+     * 5a. FR-POL-2 / FR-POL-3 — a hard breach cannot be booked at all; a soft
+     * breach needs a recorded justification. Evaluated before the provider is
+     * touched so nothing out of policy ever reaches a carrier.
+     */
+    const org0 = store.getOrganisation();
+    const policy = defaultPolicy(org0.policies);
+    const policyEvaluation = policy ? evaluateOffer(offer, policy) : undefined;
+
+    if (policyEvaluation?.blocked) {
+      throw new PolicyBlockedError(policyEvaluation.breaches.map((b) => b.message));
+    }
+    if (policyEvaluation?.requiresJustification && !params.policyJustification?.trim()) {
+      throw new PolicyJustificationRequiredError(policyEvaluation.breaches.map((b) => b.message));
+    }
+
+    /**
+     * 5b. FR-DISP-4 — choosing retail when corporate was available is a
+     * decision, not an accident. Capture the reason before committing, so the
+     * forgone saving is attributable rather than invisible in the attach rate.
+     */
+    if (declinesCorporateFare(offer) && !params.retailOverCorporateReason?.trim()) {
+      throw new JustificationRequiredError(
+        offer.corporateAlternativeSaving ?? 0,
+        offer.corporateAlternativeId!,
+      );
+    }
 
     // 6. FR-BOOK-5 — re-price immediately before committing.
     const priced = await this.provider.price(offer.id, gst);
@@ -144,9 +191,10 @@ export class BookingService {
     }
 
     const now = new Date().toISOString();
+    const reference = bookingReference();
     const booking: Booking = {
       id: id('bkg'),
-      reference: bookingReference(),
+      reference,
       sessionId: params.session.id,
       ownerRef: null, // DEC-7 — populated when auth lands
       pnr: providerBooking.pnr,
@@ -160,6 +208,24 @@ export class BookingService {
       corporateFareApplied: finalOffer.fareType === 'CORPORATE',
       status: 'TICKETED',
       createdAt: now,
+      // FR-GST-4 — both invoices, captured at booking.
+      invoices: buildInvoices(finalOffer, gst, store.getOrganisation(), reference),
+      // FR-BOOK-1 — allocation is mandatory, not an afterthought.
+      allocation: params.allocation,
+      ...(policyEvaluation ? { policyEvaluation } : {}),
+      ...(params.policyJustification?.trim()
+        ? { policyJustification: params.policyJustification.trim() }
+        : {}),
+      ...(declinesCorporateFare(finalOffer)
+        ? {
+            retailOverCorporate: {
+              corporateOfferId: finalOffer.corporateAlternativeId!,
+              forgoneSaving: finalOffer.corporateAlternativeSaving ?? 0,
+              reason: params.retailOverCorporateReason!.trim(),
+              recordedAt: now,
+            },
+          }
+        : {}),
       audit: [
         {
           at: now,
@@ -174,6 +240,8 @@ export class BookingService {
             replayedFromProvider: providerBooking.replayed,
             corporateProof: finalOffer.corporateProof ?? null,
             placeOfSupplyMismatch: placeOfSupply.mismatch,
+            allocation: params.allocation,
+            policyCompliant: policyEvaluation?.compliant ?? null,
             totalPayable: finalOffer.landedCost.totalPayable,
             recoverableItc: finalOffer.landedCost.recoverableItc,
           },

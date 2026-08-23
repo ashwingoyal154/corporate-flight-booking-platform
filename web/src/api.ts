@@ -41,6 +41,17 @@ export const api = {
   cancel: (id: string) => request<any>(`/api/bookings/${id}/cancel`, { method: 'POST' }),
   changeQuote: (id: string) => request<any>(`/api/bookings/${id}/change-quote`),
   nameChange: (id: string) => request<any>(`/api/bookings/${id}/name-change`, { method: 'POST' }),
+  dashboard: () => request<any>('/api/reports/dashboard'),
+  spend: () => request<any>('/api/reports/spend'),
+  compliance: () => request<any>('/api/reports/compliance'),
+  adminConfig: () => request<any>('/api/admin/config'),
+  putCorporateConfig: (carrier: string, body: unknown) =>
+    request<any>(`/api/admin/corporate-fare-configs/${carrier}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteCorporateConfig: (carrier: string) =>
+    request<any>(`/api/admin/corporate-fare-configs/${carrier}`, { method: 'DELETE' }),
   alerts: () => request<any>('/api/admin/alerts'),
   legHealth: () => request<any>('/api/admin/leg-health'),
   mock: (payload: unknown) =>

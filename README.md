@@ -4,8 +4,8 @@ A corporate flight self-booking tool (SBT) for an India-based consulting firm: *
 ~200 business trips/month**, mostly domestic. Built to maximise **corporate fare capture** and
 **GST input tax credit recovery**.
 
-This repo is a **runnable prototype covering stages 1 and 2** of [`plan.md`](./plan.md), running
-against a **mock supply provider**. It is meant to be clicked through and evaluated early.
+This repo is a **runnable prototype covering stages 1–4** of [`plan.md`](./plan.md), running against a
+**mock supply provider**. It is meant to be clicked through and evaluated early.
 
 | Document | What it is |
 |---|---|
@@ -32,7 +32,7 @@ npm run dev:web       # terminal 2 — UI on :5173, proxies /api to :3000
 ```
 
 ```bash
-npm test              # 107 tests
+npm test              # 181 tests
 npm run typecheck
 ```
 
@@ -49,6 +49,19 @@ npm run typecheck
 6. Go to **Bookings**, paste the reference, look it up — it resolves without a session.
 7. Hit **Quote cancellation** — the fee shown is the *corporate* fee (₹1,199 on IndiGo), not the
    retail one (₹2,999).
+8. Open **Reports** — attach rates, realised savings split between fare discount and ITC, and
+   corporate query health.
+9. Open **Admin** — change a carrier's corporate fare mechanism, then search again and watch it apply.
+   Download the GSTR-2B CSV.
+
+### Watch the policy engine work
+
+- Search in **Premium** cabin — every fare is **blocked**, and Select is disabled. Hard rules cannot be
+  justified away.
+- Search a date **2 days out** — fares breach the advance-purchase rule *softly*: bookable, but
+  checkout demands a written justification that is recorded against the booking.
+- Pick a **retail** fare where a corporate one exists — a second, separate reason is required, and the
+  forgone saving shows up under leakage in Reports.
 
 ### Then break it on purpose
 
@@ -87,10 +100,41 @@ The demo bar at the bottom of the screen injects failures. This is where stage 2
 - **Name change routed to a human** — carrier rules were never established, so we do not guess
 - **Immutable audit trail** with correlation IDs
 
+### Stage 3 — spend less
+
+- **Ranking by landed cost, not headline price** — net of recoverable ITC, plus weighted change-fee
+  exposure. Every offer shows *why* it ranks where it does; nothing is reordered silently
+- **Justification capture** — booking a retail fare when a corporate one existed on the same flight
+  requires a recorded reason, and the forgone saving is attributed
+- **Savings dashboard** — corporate attach rate, GSTIN attach rate, realised savings split between
+  fare discount and ITC, and corporate-query health
+- **Credit shell tracking** — cancelled tickets leave value with the carrier; untracked, it expires
+- **Both invoices captured** — the airline's fare invoice and our service-fee invoice
+
+### Stage 4 — run it
+
+- **Admin console** — legal entities with positional GSTIN validation, corporate fare configs per
+  carrier, cost centres and projects. A new carrier code goes live with no code change and no deploy
+- **Policy engine** — fare caps compared against *landed* cost, cabin rules, advance-purchase
+  windows, preferred carriers. Soft breaches need a justification; hard breaches are blocked before
+  any provider call
+- **Mandatory allocation** — project code, cost centre and client-billable flag on every booking,
+  validated against config
+- **Spend reporting** by project, cost centre and billability
+- **GSTR-2B reconciliation export** (CSV) — one line per *invoice*, since 2B is filed per supplier
+  invoice; cancelled bookings flagged so finance stops claiming reversed credit
+
 ## What is deliberately not here
 
-Stages 3–6 of [`plan.md`](./plan.md): landed-cost *ranking* and nudges, savings dashboards, admin
-config UI, policy engine, approvals, live supply, and authentication.
+**Stage 5 (live supply)** is blocked on a commercial decision, not on engineering. The supply partner
+(`DEC-1`) is undecided, and every Indian aggregator's API documentation is partner-gated — that needs
+an NDA, not more code. Everything sits behind the `SupplyProvider` port so the swap is contained.
+
+**Stage 6 (authentication, approvals, arranger booking)** is deliberately unbuilt because it
+contradicts a constraint you set: `CON-10` says no auth for now, with bookings scoped to a session.
+Building it would mean overriding that. The data model is already shaped for it — `Booking.ownerRef`
+is nullable and waiting, and the audit trail records an actor from day one — so it is a backfill
+rather than a rewrite when you want it.
 
 Two constraints shape the prototype and are worth stating plainly:
 
@@ -114,15 +158,22 @@ src/
   search/
     orchestrator.ts      dual-leg search, 5s budget, leg classification
     pricing.ts           GST + landed cost
+    ranking.ts           landed-cost ranking + explanations
+  policy/engine.ts       policy evaluation, soft vs hard breaches
+  reporting/
+    metrics.ts           attach rates, savings, credit shells, leg health
+    finance.ts           spend by project, compliance, GSTR-2B ledger
   booking/
     cart.ts              CON-1 enforcement
     hold.ts              5-minute hold
     payment.ts           card-data rejection
     bookingService.ts    idempotency, price-change halt, audit
     servicing.ts         cancel / change quote / name change
-  gst/gate.ts            GSTIN hard-block, place-of-supply check
+  gst/
+    gate.ts              GSTIN hard-block, place-of-supply check
+    invoices.ts          airline + agent invoice capture
   store/                 JSON-file persistence + seeded config
-tests/                   107 tests, organised by requirement ID
+tests/                   181 tests, organised by requirement ID
 ```
 
 Money is **integer paise** throughout — GST arithmetic feeds an input-tax-credit claim that finance
@@ -146,6 +197,10 @@ Each suite is named for the requirement it proves.
 | `servicing.test.ts` | `FR-SVC-1`, `FR-SVC-2`, `FR-SVC-4`, reference retrieval |
 | `landed-cost.test.ts` | `FR-DISP-2`, `FR-GST-5` — asserts the spec's ₹6,000/5% worked example exactly |
 | `corporate-proof.test.ts` | `FR-SRCH-5`, `FR-BOOK-6`, `FR-DISP-1` |
+| `stage3-ranking-nudges.test.ts` | `FR-DISP-3`, `FR-DISP-4` — including that a dearer headline fare correctly ranks first |
+| `stage3-reporting.test.ts` | `FR-RPT-1/2/3`, `FR-SVC-3`, `FR-GST-4` |
+| `stage4-policy.test.ts` | `FR-POL-2`, `FR-POL-3` — soft vs hard, and no provider call on a block |
+| `stage4-finance.test.ts` | `FR-BOOK-1`, `FR-RPT-4`, `FR-RPT-5`, `FR-GST-6` |
 
 ---
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiFailure, api, inr, timeOf } from './api.js';
 
-type View = 'search' | 'results' | 'checkout' | 'confirmed' | 'bookings' | 'ops';
+type View = 'search' | 'results' | 'checkout' | 'confirmed' | 'bookings' | 'reports' | 'admin' | 'ops';
 
 const CARRIERS: Record<string, string> = {
   '6E': 'IndiGo',
@@ -100,6 +100,12 @@ export function App() {
           <button className={view === 'bookings' ? 'active' : ''} onClick={() => setView('bookings')}>
             Bookings
           </button>
+          <button className={view === 'reports' ? 'active' : ''} onClick={() => setView('reports')}>
+            Reports
+          </button>
+          <button className={view === 'admin' ? 'active' : ''} onClick={() => setView('admin')}>
+            Admin
+          </button>
           <button className={view === 'ops' ? 'active' : ''} onClick={() => setView('ops')}>
             Ops
           </button>
@@ -128,6 +134,7 @@ export function App() {
           hold={hold}
           meta={holdMeta}
           entity={entity}
+          config={config}
           onCancel={() => setView('results')}
           onBooked={(b: any) => {
             setBooking(b);
@@ -142,6 +149,8 @@ export function App() {
       )}
 
       {view === 'bookings' && <BookingsView onError={setError} />}
+      {view === 'reports' && <ReportsView />}
+      {view === 'admin' && <AdminView onError={setError} />}
       {view === 'ops' && <OpsView />}
 
       <DevBar onReset={() => setResult(null)} />
@@ -228,11 +237,15 @@ function SearchView({ config, entity, criteria, setCriteria, onSearch, searching
 }
 
 function ResultsView({ result, onSelect, onBack }: any) {
-  const corporate = result.offers.filter((o: any) => o.fareType === 'CORPORATE');
-  const retail = result.offers.filter((o: any) => o.fareType === 'RETAIL');
+  const [grouped, setGrouped] = useState(false);
   const failedLegs = result.legs.filter(
     (l: any) => l.fareType === 'CORPORATE' && l.outcome !== 'SUCCESS' && l.outcome !== 'NO_INVENTORY',
   );
+
+  // Offers arrive pre-ranked by landed cost including change exposure (FR-DISP-3).
+  const ranked = result.offers;
+  const corporate = ranked.filter((o: any) => o.fareType === 'CORPORATE');
+  const retail = ranked.filter((o: any) => o.fareType === 'RETAIL');
 
   return (
     <>
@@ -244,6 +257,9 @@ function ResultsView({ result, onSelect, onBack }: any) {
           {result.criteria.origin} → {result.criteria.destination} · {result.criteria.departDate} ·
           returned in {result.elapsedMs}ms
         </span>
+        <button className="ghost" style={{ marginLeft: 'auto' }} onClick={() => setGrouped(!grouped)}>
+          {grouped ? 'Show ranked' : 'Group by fare type'}
+        </button>
       </div>
 
       {/* FR-SRCH-4: a failed corporate query must never read as "no corporate fare". */}
@@ -265,36 +281,57 @@ function ResultsView({ result, onSelect, onBack }: any) {
         </div>
       )}
 
-      <h2>Corporate fares</h2>
-      {corporate.length === 0 && (
-        <div className="banner info">
-          No corporate fares were returned for this route on this date.
-        </div>
+      {grouped ? (
+        <>
+          <h2>Corporate fares</h2>
+          {corporate.length === 0 && (
+            <div className="banner info">No corporate fares were returned for this route.</div>
+          )}
+          <div className="grid" style={{ marginBottom: 24 }}>
+            {corporate.map((o: any) => (
+              <Offer key={o.id} o={o} onSelect={onSelect} />
+            ))}
+          </div>
+          <h2>Retail fares</h2>
+          <div className="grid">
+            {retail.map((o: any) => (
+              <Offer key={o.id} o={o} onSelect={onSelect} />
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="banner info">
+            <strong>Ranked by total cost to the company</strong> — fare plus GST, less recoverable input
+            tax credit, plus weighted change-fee exposure. This is not the same order as headline price:
+            a fare that looks dearer can genuinely cost less.
+          </div>
+          <div className="grid">
+            {ranked.map((o: any, i: number) => (
+              <Offer key={o.id} o={o} onSelect={onSelect} rank={i + 1} />
+            ))}
+          </div>
+        </>
       )}
-      <div className="grid" style={{ marginBottom: 24 }}>
-        {corporate.map((o: any) => (
-          <Offer key={o.id} o={o} onSelect={onSelect} />
-        ))}
-      </div>
-
-      <h2>Retail fares</h2>
-      <div className="grid">
-        {retail.map((o: any) => (
-          <Offer key={o.id} o={o} onSelect={onSelect} />
-        ))}
-      </div>
     </>
   );
 }
 
-function Offer({ o, onSelect }: any) {
+function Offer({ o, onSelect, rank }: any) {
   const seg = o.segments[0];
   const isCorp = o.fareType === 'CORPORATE';
+  const declinesCorporate = !isCorp && o.corporateAlternativeId;
+
   return (
     <div className={`offer ${isCorp ? 'corporate' : ''}`}>
       <div className="offer-head">
         <div>
           <div className="flight">
+            {rank === 1 && (
+              <span className="badge save" style={{ marginRight: 8 }}>
+                BEST TOTAL COST
+              </span>
+            )}
             {CARRIERS[o.carrier]} {seg.flightNumber}
             <span className={`badge ${isCorp ? 'corp' : 'retail'}`} style={{ marginLeft: 8 }}>
               {isCorp ? 'CORPORATE FARE' : 'Retail'}
@@ -302,6 +339,16 @@ function Offer({ o, onSelect }: any) {
             {isCorp && o.savingVsRetail > 0 && (
               <span className="badge save" style={{ marginLeft: 6 }}>
                 {inr(o.savingVsRetail)} below retail
+              </span>
+            )}
+            {/* FR-POL-2 — policy verdict is visible at search, not discovered at checkout. */}
+            {o.policy && !o.policy.compliant && (
+              <span
+                className={`badge ${o.policy.blocked ? 'blocked' : 'outpolicy'}`}
+                style={{ marginLeft: 6 }}
+                title={o.policy.breaches.map((b: any) => b.message).join('\n')}
+              >
+                {o.policy.blocked ? 'BLOCKED BY POLICY' : 'OUT OF POLICY'}
               </span>
             )}
           </div>
@@ -312,16 +359,36 @@ function Offer({ o, onSelect }: any) {
           <div className="small muted" style={{ marginTop: 6 }}>
             {o.inclusions.join(' · ')}
           </div>
-          <div className="small muted" style={{ marginTop: 4 }}>
-            Change {inr(o.landedCost.changeFee)} · Cancel {inr(o.landedCost.cancelFee)}
-          </div>
+
+          {/* FR-DISP-3 — never reorder silently; say why this ranks here. */}
+          {o.rankingReasons && (
+            <ul className="small muted reasons">
+              {o.rankingReasons.map((r: string, i: number) => (
+                <li key={i}>{r}</li>
+              ))}
+            </ul>
+          )}
+
+          {/* FR-DISP-4 — flag the forgone saving before it is forgone. */}
+          {declinesCorporate && (
+            <div className="banner warn small" style={{ marginTop: 8, marginBottom: 0 }}>
+              A corporate fare is available on this flight, {inr(o.corporateAlternativeSaving)} cheaper.
+              Choosing this one needs a reason.
+            </div>
+          )}
         </div>
         <div className="price">
           <div className="total">{inr(o.landedCost.totalPayable)}</div>
           <div className="itc">incl. {inr(o.price.gstAmount)} GST</div>
           {/* FR-DISP-2: landed cost, not headline fare. */}
           <div className="net">net {inr(o.landedCost.netCost)} after ITC</div>
-          <button className="primary" style={{ marginTop: 8 }} onClick={() => onSelect(o.id)}>
+          <button
+            className="primary"
+            style={{ marginTop: 8 }}
+            onClick={() => onSelect(o.id)}
+            disabled={o.policy?.blocked}
+            title={o.policy?.blocked ? 'Blocked by travel policy' : undefined}
+          >
             Select
           </button>
         </div>
@@ -330,7 +397,7 @@ function Offer({ o, onSelect }: any) {
   );
 }
 
-function CheckoutView({ hold, meta, entity, onCancel, onBooked, onError }: any) {
+function CheckoutView({ hold, meta, entity, config, onCancel, onBooked, onError }: any) {
   const [remaining, setRemaining] = useState(meta?.remainingMs ?? 0);
   const [pax, setPax] = useState({
     firstName: '',
@@ -340,6 +407,12 @@ function CheckoutView({ hold, meta, entity, onCancel, onBooked, onError }: any) 
   });
   const [busy, setBusy] = useState(false);
   const [priceChange, setPriceChange] = useState<{ oldTotal: number; newTotal: number } | null>(null);
+  // FR-DISP-4 — required when this retail fare declines an available corporate one.
+  const [reason, setReason] = useState('');
+  // FR-BOOK-1 — allocation is mandatory.
+  const [alloc, setAlloc] = useState({ projectCode: '', costCentreCode: '' });
+  // FR-POL-3 — required on a soft policy breach.
+  const [policyReason, setPolicyReason] = useState('');
   const idempotencyKey = useMemo(() => `idem_${Math.random().toString(36).slice(2)}${Date.now()}`, []);
 
   useEffect(() => {
@@ -365,6 +438,13 @@ function CheckoutView({ hold, meta, entity, onCancel, onBooked, onError }: any) 
         paymentToken: token,
         idempotencyKey,
         ...(acceptedTotal !== undefined ? { acceptedTotal } : {}),
+        ...(reason.trim() ? { retailOverCorporateReason: reason.trim() } : {}),
+        allocation: {
+          projectCode: alloc.projectCode,
+          costCentreCode: alloc.costCentreCode,
+          clientBillable: selectedProject?.clientBillable ?? false,
+        },
+        ...(policyReason.trim() ? { policyJustification: policyReason.trim() } : {}),
       });
       onBooked(res.booking);
     } catch (e) {
@@ -382,7 +462,22 @@ function CheckoutView({ hold, meta, entity, onCancel, onBooked, onError }: any) 
   };
 
   const o = hold.offer;
-  const complete = pax.firstName && pax.lastName && pax.email && pax.phone;
+  const needsReason = Boolean(o.corporateAlternativeId);
+  const projects = config?.projects ?? [];
+  const costCentres = config?.costCentres ?? [];
+  const selectedProject = projects.find((p: any) => p.code === alloc.projectCode);
+  const pol = o.policy;
+  const needsPolicyReason = Boolean(pol?.requiresJustification);
+  const blocked = Boolean(pol?.blocked);
+  const complete =
+    pax.firstName &&
+    pax.lastName &&
+    pax.email &&
+    pax.phone &&
+    alloc.projectCode &&
+    alloc.costCentreCode &&
+    (!needsReason || reason.trim().length >= 3) &&
+    (!needsPolicyReason || policyReason.trim().length >= 3);
 
   return (
     <div className="split">
@@ -447,6 +542,105 @@ function CheckoutView({ hold, meta, entity, onCancel, onBooked, onError }: any) 
         </div>
 
         <div className="card">
+          <h3>Allocation</h3>
+          <p className="small muted">
+            Travel on a client engagement is rebilled, so this is what separates recoverable cost from
+            firm overhead.
+          </p>
+          <div className="row">
+            <div>
+              <label>Project / engagement</label>
+              <select
+                value={alloc.projectCode}
+                onChange={(e) => setAlloc({ ...alloc, projectCode: e.target.value })}
+              >
+                <option value="">Select…</option>
+                {projects.map((p: any) => (
+                  <option key={p.code} value={p.code}>
+                    {p.code} — {p.name} ({p.clientName})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label>Cost centre</label>
+              <select
+                value={alloc.costCentreCode}
+                onChange={(e) => setAlloc({ ...alloc, costCentreCode: e.target.value })}
+              >
+                <option value="">Select…</option>
+                {costCentres.map((c: any) => (
+                  <option key={c.code} value={c.code}>
+                    {c.code} — {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {selectedProject && (
+              <div>
+                <label>Billing</label>
+                <div>
+                  <span className={`badge ${selectedProject.clientBillable ? 'save' : 'retail'}`}>
+                    {selectedProject.clientBillable ? 'CLIENT BILLABLE' : 'FIRM INTERNAL'}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {blocked && (
+          <div className="card">
+            <div className="banner error" style={{ marginBottom: 0 }}>
+              <strong>This fare cannot be booked.</strong>
+              <ul className="small" style={{ margin: '6px 0 0' }}>
+                {pol.breaches.map((b: any, i: number) => (
+                  <li key={i}>{b.message}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {needsPolicyReason && (
+          <div className="card">
+            <h3>Out of policy</h3>
+            <div className="banner warn">
+              <ul className="small" style={{ margin: 0 }}>
+                {pol.breaches.map((b: any, i: number) => (
+                  <li key={i}>{b.message}</li>
+                ))}
+              </ul>
+            </div>
+            <label>Justification (required)</label>
+            <input
+              style={{ width: '100%' }}
+              placeholder="e.g. client escalation required same-week travel"
+              value={policyReason}
+              onChange={(e) => setPolicyReason(e.target.value)}
+            />
+          </div>
+        )}
+
+        {needsReason && (
+          <div className="card">
+            <h3>Why not the corporate fare?</h3>
+            <div className="banner warn">
+              A corporate fare was available on this flight,{' '}
+              <strong>{inr(o.corporateAlternativeSaving)}</strong> cheaper. Booking this retail fare
+              forgoes that saving, so the reason is recorded against the booking.
+            </div>
+            <label>Reason (required)</label>
+            <input
+              style={{ width: '100%' }}
+              placeholder="e.g. corporate fare timing did not fit the client meeting"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </div>
+        )}
+
+        <div className="card">
           <h3>Payment</h3>
           <p className="small muted">
             Card details are tokenised by the payment provider in the browser. This server never receives,
@@ -467,7 +661,7 @@ function CheckoutView({ hold, meta, entity, onCancel, onBooked, onError }: any) 
           <div className="row">
             <button
               className="primary"
-              disabled={busy || expired || !complete || !!priceChange}
+              disabled={busy || expired || !complete || blocked || !!priceChange}
               onClick={() => pay()}
             >
               {busy ? 'Booking…' : `Pay ${inr(o.landedCost.totalPayable)}`}
@@ -798,5 +992,495 @@ function DevBar({ onReset }: { onReset: () => void }) {
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Reporting — FR-RPT-1, FR-RPT-2, FR-RPT-3, FR-SVC-3, FR-RPT-6.
+ *
+ * The numbers here are computed from stored booking evidence, not from vendor
+ * marketing percentages. research.md §6.2 found no credible published figure
+ * for the real discount on Indian corporate fares, so this view is how the
+ * thesis gets tested rather than assumed.
+ */
+function ReportsView() {
+  const [d, setD] = useState<any>(null);
+
+  const load = useCallback(async () => {
+    setD(await api.dashboard());
+  }, []);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  if (!d) return <div className="card muted">Loading…</div>;
+
+  const pct = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(1)}%`);
+  const a = d.attach;
+  const sv = d.savings;
+
+  return (
+    <>
+      {d.headlines.map((h: string, i: number) => (
+        <div className={`banner ${h.startsWith('No leakage') ? 'ok' : 'warn'}`} key={i}>
+          {h}
+        </div>
+      ))}
+
+      <div className="stats">
+        <Stat
+          label="Corporate fare attach rate"
+          value={pct(a.corporateAttachRate)}
+          sub={`${a.corporateBookings} of ${a.corporateEligibleBookings} where a corporate fare existed`}
+        />
+        <Stat
+          label="GSTIN attach rate"
+          value={pct(a.gstinAttachRate)}
+          sub={`${a.bookingsWithGstin} of ${a.totalBookings} bookings · target 100%`}
+          good={a.gstinAttachRate === 1}
+        />
+        <Stat
+          label="Total saving"
+          value={inr(sv.totalSaving)}
+          sub={`${sv.savingRatePct === null ? '—' : sv.savingRatePct.toFixed(1) + '%'} of counterfactual retail spend`}
+          good
+        />
+        <Stat
+          label="Recoverable ITC"
+          value={inr(sv.itcRecoverable)}
+          sub="uncorrectable after ticketing"
+          good
+        />
+      </div>
+
+      <div className="card">
+        <h2>Where the saving comes from</h2>
+        <table>
+          <tbody>
+            <tr>
+              <td>Corporate fare discount realised</td>
+              <td className="num">{inr(sv.realisedCorporateSaving)}</td>
+            </tr>
+            <tr>
+              <td>GST input tax credit recoverable</td>
+              <td className="num">{inr(sv.itcRecoverable)}</td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Total</strong>
+              </td>
+              <td className="num">
+                <strong>{inr(sv.totalSaving)}</strong>
+              </td>
+            </tr>
+            <tr>
+              <td className="muted">Total paid ({sv.bookingCount} bookings)</td>
+              <td className="num muted">{inr(sv.totalPayable)}</td>
+            </tr>
+            <tr>
+              <td className="muted">Net of ITC</td>
+              <td className="num muted">{inr(sv.netCost)}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p className="small muted" style={{ marginBottom: 0 }}>
+          ITC is typically the larger and more reliable half: it needs no airline contract and applies to
+          every booking, whereas the fare discount depends on corporate inventory being available.
+        </p>
+      </div>
+
+      {a.declinedCorporate > 0 && (
+        <div className="card">
+          <h2>Leakage — corporate fares declined</h2>
+          <p className="small">
+            {a.declinedCorporate} booking(s) took a retail fare when a corporate one was available,
+            forgoing <strong>{inr(a.forgoneSaving)}</strong>. Reasons are recorded against each booking.
+          </p>
+        </div>
+      )}
+
+      <div className="card">
+        <h2>Unused credit shells</h2>
+        {d.credits.count === 0 ? (
+          <div className="muted small">None held.</div>
+        ) : (
+          <>
+            <p className="small">
+              <strong>{inr(d.credits.totalHeld)}</strong> held across {d.credits.count} shell(s).{' '}
+              {d.credits.expiringWithin90Days > 0 && (
+                <span style={{ color: 'var(--warn)' }}>
+                  {d.credits.expiringWithin90Days} expiring within 90 days.
+                </span>
+              )}
+            </p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Carrier</th>
+                  <th>Shells</th>
+                  <th className="num">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.credits.byCarrier.map((c: any) => (
+                  <tr key={c.carrier}>
+                    <td>{CARRIERS[c.carrier]}</td>
+                    <td>{c.count}</td>
+                    <td className="num">{inr(c.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </div>
+
+      <div className="card">
+        <h2>Corporate query health</h2>
+        <p className="small muted">
+          A corporate query that fails silently looks exactly like "no corporate fare available", and would
+          make the attach rate above look better than reality. This is how we tell the difference.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Carrier</th>
+              <th>Leg</th>
+              <th>Success</th>
+              <th>Outcomes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.legs.map((l: any) => (
+              <tr key={`${l.carrier}-${l.fareType}`}>
+                <td>{CARRIERS[l.carrier]}</td>
+                <td>{l.fareType}</td>
+                <td style={{ color: l.successRate < 0.99 ? 'var(--bad)' : 'var(--good)' }}>
+                  {(l.successRate * 100).toFixed(0)}%
+                </td>
+                <td className="small">
+                  {Object.entries(l.outcomes)
+                    .map(([k, v]) => `${k}: ${v}`)
+                    .join(' · ')}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function Stat({ label, value, sub, good }: any) {
+  return (
+    <div className="stat">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value" style={good ? { color: 'var(--good)' } : undefined}>
+        {value}
+      </div>
+      <div className="stat-sub">{sub}</div>
+    </div>
+  );
+}
+
+/**
+ * Admin console — FR-ORG-1, FR-ORG-2, FR-ORG-4, FR-GST-6.
+ *
+ * The Stage 4 exit criterion: a travel admin adds a carrier's corporate code
+ * and it appears in the next search, with no code change and no deploy (CON-7).
+ *
+ * NOTE (CON-10): there is no auth in v1, so this console is unprotected. It
+ * must be role-gated when identity lands in Stage 6.
+ */
+function AdminView({ onError }: any) {
+  const [cfg, setCfg] = useState<any>(null);
+  const [spend, setSpend] = useState<any>(null);
+  const [compliance, setCompliance] = useState<any>(null);
+  const [draft, setDraft] = useState<any>({
+    carrier: 'SG',
+    mechanism: 'CONTRACT_CODE',
+    credentialRef: '',
+    code: '',
+    tourCode: '',
+  });
+
+  const load = useCallback(async () => {
+    setCfg(await api.adminConfig());
+    setSpend(await api.spend());
+    setCompliance(await api.compliance());
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (!cfg) return <div className="card muted">Loading…</div>;
+
+  const saveConfig = async () => {
+    try {
+      await api.putCorporateConfig(draft.carrier, {
+        mechanism: draft.mechanism,
+        credentialRef: draft.credentialRef,
+        ...(draft.code ? { code: draft.code } : {}),
+        ...(draft.tourCode ? { tourCode: draft.tourCode } : {}),
+        activeFrom: new Date().toISOString().slice(0, 10),
+      });
+      await load();
+    } catch (e) {
+      if (e instanceof ApiFailure) onError(e);
+    }
+  };
+
+  return (
+    <>
+      <div className="banner info">
+        There is no authentication in this prototype, so this console is unprotected. It must be
+        role-gated when identity is added.
+      </div>
+
+      <div className="card">
+        <h2>Corporate fare configuration</h2>
+        <p className="small muted">
+          How a corporate fare is unlocked differs by carrier. IndiGo is gated by a separate credential
+          and cannot be mixed with retail; full-service carriers use an account code in the request; Akasa
+          uses a promo code. The search-time code and the ticket-time tour code are different things — a
+          tour code alone unlocks nothing.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Carrier</th>
+              <th>Mechanism</th>
+              <th>Retrieval code</th>
+              <th>Tour code</th>
+              <th>Credential</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {cfg.corporateFareConfigs.map((c: any) => (
+              <tr key={c.carrier}>
+                <td>{CARRIERS[c.carrier]}</td>
+                <td>
+                  <span className="badge corp">{c.mechanism}</span>
+                </td>
+                <td className="mono small">{c.code ?? '—'}</td>
+                <td className="mono small">{c.tourCode ?? '—'}</td>
+                <td className="mono small muted">{c.credentialRef}</td>
+                <td>
+                  <button
+                    className="ghost"
+                    onClick={async () => {
+                      await api.deleteCorporateConfig(c.carrier);
+                      await load();
+                    }}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <h3 style={{ marginTop: 16 }}>Add or replace</h3>
+        <div className="row">
+          <div>
+            <label>Carrier</label>
+            <select value={draft.carrier} onChange={(e) => setDraft({ ...draft, carrier: e.target.value })}>
+              {Object.entries(CARRIERS).map(([c, n]) => (
+                <option key={c} value={c}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label>Mechanism</label>
+            <select
+              value={draft.mechanism}
+              onChange={(e) => setDraft({ ...draft, mechanism: e.target.value })}
+            >
+              <option value="CREDENTIAL">CREDENTIAL</option>
+              <option value="ACCOUNT_CODE">ACCOUNT_CODE</option>
+              <option value="PROMO_CODE">PROMO_CODE</option>
+              <option value="CONTRACT_CODE">CONTRACT_CODE</option>
+            </select>
+          </div>
+          <div>
+            <label>Credential reference</label>
+            <input
+              placeholder="secret://supply/…"
+              value={draft.credentialRef}
+              onChange={(e) => setDraft({ ...draft, credentialRef: e.target.value })}
+            />
+          </div>
+          <div>
+            <label>Retrieval code</label>
+            <input value={draft.code} onChange={(e) => setDraft({ ...draft, code: e.target.value })} />
+          </div>
+          <div>
+            <label>Tour code</label>
+            <input
+              value={draft.tourCode}
+              onChange={(e) => setDraft({ ...draft, tourCode: e.target.value })}
+            />
+          </div>
+          <button className="primary" onClick={saveConfig}>
+            Save
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>Legal entities</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Entity</th>
+              <th>GSTIN</th>
+              <th>State</th>
+              <th>Registered name</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cfg.legalEntities.map((e: any) => (
+              <tr key={e.id}>
+                <td>{e.name}</td>
+                <td className="mono">{e.gstin}</td>
+                <td>{e.stateCode}</td>
+                <td className="small muted">{e.registeredName}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="card">
+        <h2>Travel policy</h2>
+        {cfg.policies.map((p: any) => (
+          <div key={p.id}>
+            <h3>
+              {p.name} {p.isDefault && <span className="badge corp">DEFAULT</span>}
+            </h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Rule</th>
+                  <th>Enforcement</th>
+                  <th>Setting</th>
+                </tr>
+              </thead>
+              <tbody>
+                {p.rules.map((r: any, i: number) => (
+                  <tr key={i}>
+                    <td>{r.kind}</td>
+                    <td>
+                      <span className={`badge ${r.enforcement === 'HARD' ? 'blocked' : 'outpolicy'}`}>
+                        {r.enforcement}
+                      </span>
+                    </td>
+                    <td className="small">
+                      {r.kind === 'MAX_FARE' && `${inr(r.amount)}${r.cabin ? ` (${r.cabin})` : ''}`}
+                      {r.kind === 'CABIN' && r.allowed.join(', ')}
+                      {r.kind === 'ADVANCE_PURCHASE' && `${r.minDays} days`}
+                      {r.kind === 'PREFERRED_CARRIER' &&
+                        r.carriers.map((c: string) => CARRIERS[c]).join(', ')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+        <p className="small muted" style={{ marginBottom: 0 }}>
+          Rules are mostly soft by design. Blocking a legitimate late booking pushes people out of the tool,
+          and a booking made outside it loses both the corporate fare and the GST credit — more expensive
+          than the overspend.
+        </p>
+      </div>
+
+      {compliance && compliance.total > 0 && (
+        <div className="card">
+          <h2>Policy compliance</h2>
+          <div className="stats">
+            <Stat
+              label="Compliance rate"
+              value={compliance.complianceRate === null ? '—' : `${(compliance.complianceRate * 100).toFixed(0)}%`}
+              sub={`${compliance.inPolicy} in policy of ${compliance.total}`}
+              good={compliance.complianceRate === 1}
+            />
+          </div>
+          {compliance.justifications.length > 0 && (
+            <table>
+              <thead>
+                <tr>
+                  <th>Booking</th>
+                  <th>Justification</th>
+                  <th>Breach</th>
+                </tr>
+              </thead>
+              <tbody>
+                {compliance.justifications.map((j: any) => (
+                  <tr key={j.reference}>
+                    <td className="mono small">{j.reference}</td>
+                    <td className="small">{j.reason}</td>
+                    <td className="small muted">{j.breaches.join('; ')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {spend && spend.byProject.length > 0 && (
+        <div className="card">
+          <h2>Spend by project</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Bookings</th>
+                <th>Corporate</th>
+                <th className="num">Total paid</th>
+                <th className="num">Net of ITC</th>
+              </tr>
+            </thead>
+            <tbody>
+              {spend.byProject.map((r: any) => (
+                <tr key={r.key}>
+                  <td>
+                    <span className="mono small">{r.key}</span> {r.label}
+                  </td>
+                  <td>{r.bookings}</td>
+                  <td>
+                    {r.corporateFareBookings}/{r.bookings}
+                  </td>
+                  <td className="num">{inr(r.totalPayable)}</td>
+                  <td className="num">{inr(r.netCost)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="card">
+        <h2>GSTR-2B reconciliation</h2>
+        <p className="small muted">
+          One line per invoice, not per booking — GSTR-2B is filed per supplier invoice, so the airline
+          fare and our service fee must match separately. Cancelled bookings are flagged so finance stops
+          claiming the reversed credit.
+        </p>
+        <a href="/api/reports/gstr2b?format=csv">
+          <button className="primary">Download CSV</button>
+        </a>
+      </div>
+    </>
   );
 }

@@ -85,3 +85,16 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
 .devbar { position: fixed; bottom: 0; left: 0; right: 0; background: #0a0d12; border-top: 1px solid var(--line); padding: 10px 20px; }
 .devbar .inner { max-width: 1080px; margin: 0 auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .devbar button { padding: 5px 10px; font-size: 12px; }
+
+/* Stage 3 — ranking explanation and reporting */
+.reasons { margin: 6px 0 0; padding-left: 16px; }
+.reasons li { margin: 2px 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.stat-value { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
+.stat-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.banner.small { font-size: 12px; padding: 8px 10px; }
+.badge.outpolicy { background: rgba(242,181,68,0.15); color: var(--warn); border: 1px solid rgba(242,181,68,0.4); }
+.badge.blocked { background: rgba(242,104,92,0.15); color: var(--bad); border: 1px solid rgba(242,104,92,0.4); }

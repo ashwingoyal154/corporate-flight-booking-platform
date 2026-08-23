@@ -4,7 +4,7 @@ import { MixedFareTypeError } from '../src/domain/errors.js';
 import { BookingService } from '../src/booking/bookingService.js';
 import { createHold } from '../src/booking/hold.js';
 import { issueMockToken } from '../src/booking/payment.js';
-import { criteria, entityFor, makeSession, newOrchestrator, PASSENGER, resetWorld } from './helpers.js';
+import { criteria, entityFor, makeSession, newOrchestrator, PASSENGER, resetWorld, ALLOCATION } from './helpers.js';
 import type { FareOffer } from '../src/domain/types.js';
 
 /**
@@ -98,6 +98,7 @@ describe('CON-1 — corporate and retail fares can never be combined', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       idempotencyKey: 'idem_con1_ok',
     });
     expect(booking.status).toBe('TICKETED');

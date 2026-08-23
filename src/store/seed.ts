@@ -84,6 +84,57 @@ export const SEED_ORGANISATION: Organisation = {
    * rationalisation, which is precisely why this must not be a constant.
    */
   gstRates: { economy: 0.05, premium: 0.18 },
+
+  /**
+   * Ranking weight (FR-DISP-3). 0.25 is an assumption to calibrate against real
+   * change rates, not a measurement — see RankingPolicy in domain/types.ts.
+   */
+  rankingPolicy: { changeProbability: 0.25 },
+
+  /** Cost centres and project codes (FR-ORG-4). */
+  costCentres: [
+    { code: 'CC-CONS', name: 'Consulting Delivery', active: true },
+    { code: 'CC-SALES', name: 'Business Development', active: true },
+    { code: 'CC-INT', name: 'Internal / Firm', active: true },
+  ],
+
+  /**
+   * Consulting engagements. Travel is usually rebilled, so the project code is
+   * what separates recoverable cost from overhead.
+   */
+  projects: [
+    { code: 'PRJ-4471', name: 'Retail Banking Cost Programme', clientName: 'Meridian Bank', clientBillable: true, active: true },
+    { code: 'PRJ-4489', name: 'Supply Chain Diagnostic', clientName: 'Kalpana Industries', clientBillable: true, active: true },
+    { code: 'PRJ-5010', name: 'Digital Operating Model', clientName: 'Northwind Telecom', clientBillable: true, active: true },
+    { code: 'PRJ-0001', name: 'Firm Internal', clientName: 'ConsultCo', clientBillable: false, active: true },
+  ],
+
+  /**
+   * Default travel policy (FR-POL-2, FR-POL-3).
+   *
+   * Mostly SOFT by design: blocking a legitimate late booking pushes people out
+   * of the tool entirely, and a booking made outside the tool loses the
+   * corporate fare AND the GST credit — far more expensive than the overspend.
+   * Only premium cabin is hard-blocked on domestic sectors.
+   */
+  policies: [
+    {
+      id: 'pol_default',
+      name: 'ConsultCo domestic travel policy',
+      isDefault: true,
+      rules: [
+        { kind: 'MAX_FARE', enforcement: 'SOFT', amount: 12_00_000, cabin: 'ECONOMY' },
+        { kind: 'CABIN', enforcement: 'HARD', allowed: ['ECONOMY'] },
+        { kind: 'ADVANCE_PURCHASE', enforcement: 'SOFT', minDays: 7 },
+        { kind: 'PREFERRED_CARRIER', enforcement: 'SOFT', carriers: ['6E', 'AI'] },
+      ],
+    },
+  ],
+
+  /** The agent's own GSTIN, for the service-fee invoice (FR-GST-4). */
+  agentGstin: '29AAACT2727Q1ZW',
+  /** ₹250 per booking, plus 18% GST. */
+  serviceFeePerBooking: 25_000,
 };
 
 export function seed(): void {

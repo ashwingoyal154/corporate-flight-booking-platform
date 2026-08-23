@@ -11,6 +11,8 @@ import type {
 } from '../domain/types.js';
 import { ProviderError, type SupplyCredential, type SupplyProvider } from '../supply/port.js';
 import { priceOffer } from './pricing.js';
+import { rankOffers } from './ranking.js';
+import { annotateOffers, defaultPolicy } from '../policy/engine.js';
 import { correlationId, id } from '../domain/ids.js';
 import { store, type LegTelemetry } from '../store/store.js';
 import { CARRIER_NAMES } from '../domain/types.js';
@@ -193,6 +195,15 @@ export class SearchOrchestrator {
     const offers = settled.flatMap((s) => s.offers);
 
     this.attachRetailComparators(offers);
+    // FR-DISP-3 — order by landed cost including change exposure, not headline
+    // price, and annotate each offer with why it ranks where it does.
+    const ranked = rankOffers(offers, this.org.rankingPolicy);
+    /**
+     * FR-POL-2 — label every offer in or out of policy at SEARCH time.
+     * Discovering at checkout that a fare was never bookable wastes the
+     * traveller's time and is a documented reason people abandon the tool.
+     */
+    annotateOffers(ranked, defaultPolicy(this.org.policies));
 
     const partial = legs.some((l) => l.outcome === 'TIMEOUT');
 
@@ -216,7 +227,7 @@ export class SearchOrchestrator {
     return {
       searchId,
       criteria,
-      offers,
+      offers: ranked,
       legs,
       partial,
       elapsedMs: Date.now() - startedAt,
@@ -243,6 +254,14 @@ export class SearchOrchestrator {
       if (!retail) continue;
       o.retailComparatorId = retail.id;
       o.savingVsRetail = retail.price.total - o.price.total;
+
+      /**
+       * The reverse pointer, which is what makes FR-DISP-4 enforceable:
+       * booking this retail fare means declining a corporate fare that was
+       * genuinely on offer, and that decision needs a recorded reason.
+       */
+      retail.corporateAlternativeId = o.id;
+      retail.corporateAlternativeSaving = o.savingVsRetail;
     }
   }
 

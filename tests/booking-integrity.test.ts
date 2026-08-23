@@ -5,7 +5,7 @@ import { assertNoCardData, issueMockToken } from '../src/booking/payment.js';
 import { DomainError, PriceChangedError } from '../src/domain/errors.js';
 import { mockControl } from '../src/supply/mock/control.js';
 import { store } from '../src/store/store.js';
-import { criteria, entityFor, makeSession, newOrchestrator, PASSENGER, resetWorld } from './helpers.js';
+import { criteria, entityFor, makeSession, newOrchestrator, PASSENGER, resetWorld, ALLOCATION, pickBookable} from './helpers.js';
 
 /**
  * FR-BOOK-5 / FR-BOOK-7 / NFR-5 — booking integrity.
@@ -19,7 +19,7 @@ async function setup() {
   const session = makeSession();
   const entity = entityFor(session);
   const result = await orchestrator.search(criteria());
-  const offer = result.offers.find((o) => o.fareType === 'CORPORATE')!;
+  const offer = pickBookable(result, { fareType: 'CORPORATE' });
   const hold = createHold(offer, session.id);
   return { provider, session, entity, offer, hold, service: new BookingService(provider) };
 }
@@ -38,6 +38,7 @@ describe('FR-BOOK-5 — a price change halts the booking', () => {
         entity,
         passengers: [PASSENGER],
         paymentToken: issueMockToken(),
+        allocation: ALLOCATION,
         idempotencyKey: 'idem_price_1',
       }),
     ).rejects.toThrow(PriceChangedError);
@@ -54,6 +55,7 @@ describe('FR-BOOK-5 — a price change halts the booking', () => {
         entity,
         passengers: [PASSENGER],
         paymentToken: issueMockToken(),
+        allocation: ALLOCATION,
         idempotencyKey: 'idem_price_2',
       });
       expect.unreachable();
@@ -77,6 +79,7 @@ describe('FR-BOOK-5 — a price change halts the booking', () => {
         entity,
         passengers: [PASSENGER],
         paymentToken: issueMockToken(),
+        allocation: ALLOCATION,
         idempotencyKey: 'idem_price_3',
       });
     } catch (err) {
@@ -90,6 +93,7 @@ describe('FR-BOOK-5 — a price change halts the booking', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       acceptedTotal: newTotal,
       idempotencyKey: 'idem_price_3b',
     });
@@ -109,6 +113,7 @@ describe('FR-BOOK-5 — a price change halts the booking', () => {
         entity,
         passengers: [PASSENGER],
         paymentToken: issueMockToken(),
+        allocation: ALLOCATION,
         acceptedTotal: offer.price.total, // the old price
         idempotencyKey: 'idem_price_4',
       }),
@@ -129,6 +134,7 @@ describe('FR-BOOK-7 / NFR-5 — a retry never double-tickets', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       idempotencyKey: key,
     });
     const second = await service.book({
@@ -137,6 +143,7 @@ describe('FR-BOOK-7 / NFR-5 — a retry never double-tickets', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       idempotencyKey: key,
     });
 
@@ -161,6 +168,7 @@ describe('FR-BOOK-7 / NFR-5 — a retry never double-tickets', () => {
         entity,
         passengers: [PASSENGER],
         paymentToken: issueMockToken(),
+        allocation: ALLOCATION,
         idempotencyKey: key,
       }),
     ).rejects.toThrow(DomainError);
@@ -175,6 +183,7 @@ describe('FR-BOOK-7 / NFR-5 — a retry never double-tickets', () => {
           entity,
           passengers: [PASSENGER],
           paymentToken: issueMockToken(),
+          allocation: ALLOCATION,
           idempotencyKey: key,
         }),
       );
@@ -199,6 +208,7 @@ describe('FR-BOOK-7 / NFR-5 — a retry never double-tickets', () => {
         entity,
         passengers: [PASSENGER],
         paymentToken: issueMockToken(),
+        allocation: ALLOCATION,
         idempotencyKey: 'idem_indeterminate',
       });
       expect.unreachable();
@@ -219,13 +229,14 @@ describe('FR-BOOK-7 / NFR-5 — a retry never double-tickets', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       idempotencyKey: 'idem_a',
     });
 
     // A second hold, since the first is consumed.
     const { orchestrator } = newOrchestrator(provider);
     const result = await orchestrator.search(criteria({ destination: 'BLR' }));
-    const hold2 = createHold(result.offers.find((o) => o.fareType === 'CORPORATE')!, session.id);
+    const hold2 = createHold(pickBookable(result, { fareType: 'CORPORATE' }), session.id);
 
     await service.book({
       holdId: hold2.id,
@@ -233,6 +244,7 @@ describe('FR-BOOK-7 / NFR-5 — a retry never double-tickets', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       idempotencyKey: 'idem_b',
     });
 
@@ -247,6 +259,7 @@ describe('FR-BOOK-7 / NFR-5 — a retry never double-tickets', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       idempotencyKey: 'idem_consume_1',
     });
 
@@ -257,6 +270,7 @@ describe('FR-BOOK-7 / NFR-5 — a retry never double-tickets', () => {
         entity,
         passengers: [PASSENGER],
         paymentToken: issueMockToken(),
+        allocation: ALLOCATION,
         idempotencyKey: 'idem_consume_2',
       }),
     ).rejects.toThrow(/hold/i);
@@ -274,6 +288,7 @@ describe('NFR-3 / NFR-4 — audit trail', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       idempotencyKey: 'idem_audit',
     });
 
@@ -296,6 +311,7 @@ describe('NFR-3 / NFR-4 — audit trail', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       idempotencyKey: 'idem_token',
     });
 

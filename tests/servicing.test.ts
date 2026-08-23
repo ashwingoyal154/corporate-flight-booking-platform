@@ -6,7 +6,7 @@ import { issueMockToken } from '../src/booking/payment.js';
 import { NameChangeUnsupportedError, NotFoundError } from '../src/domain/errors.js';
 import { store } from '../src/store/store.js';
 import { rupees } from '../src/domain/money.js';
-import { criteria, entityFor, makeSession, newOrchestrator, PASSENGER, resetWorld } from './helpers.js';
+import { criteria, entityFor, makeSession, newOrchestrator, PASSENGER, resetWorld, ALLOCATION } from './helpers.js';
 import type { CarrierCode, FareType } from '../src/domain/types.js';
 
 /**
@@ -28,6 +28,14 @@ async function book(carrier: CarrierCode, fareType: FareType = 'CORPORATE') {
     entity,
     passengers: [PASSENGER],
     paymentToken: issueMockToken(),
+    allocation: ALLOCATION,
+    // Stage 3 (FR-DISP-4): booking a retail fare when a corporate one exists on
+    // the same flight now requires a recorded reason.
+    ...(fareType === 'RETAIL' ? { retailOverCorporateReason: 'servicing fixture' } : {}),
+    // These tests deliberately book specific carriers (Akasa, SpiceJet) to check
+    // their fee rules. Since Stage 4 those are non-preferred carriers and so a
+    // soft policy breach — justified here because the test is about fees, not policy.
+    policyJustification: 'servicing fixture — carrier chosen to exercise fare rules',
     idempotencyKey: `idem_${carrier}_${fareType}_${Math.random()}`,
   });
   return { booking, session, servicing: new ServicingService(provider) };

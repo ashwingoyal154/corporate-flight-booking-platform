@@ -78,6 +78,33 @@ export interface Organisation {
   corporateFareConfigs: CorporateFareConfig[];
   /** GST rates are configuration, never hardcoded (FR-GST-5, DEC-6). */
   gstRates: GstRates;
+  /** How offers are ordered (FR-DISP-3). */
+  rankingPolicy: RankingPolicy;
+  /** Cost centres and project codes for allocation (FR-ORG-4). */
+  costCentres: CostCentre[];
+  projects: Project[];
+  /** Travel policies. v1 evaluates against the default only (CON-10). */
+  policies: TravelPolicy[];
+  /** Our own GSTIN, as the agent raising the service-fee invoice (FR-GST-4). */
+  agentGstin: string;
+  /** Agent service fee per booking, in paise. Attracts GST at 18%. */
+  serviceFeePerBooking: number;
+}
+
+/**
+ * Ranking policy — FR-DISP-3.
+ *
+ * `changeProbability` weights each offer's change-fee exposure into its ranking
+ * score. Consulting trips change often, so a fare that is ₹200 cheaper but
+ * ₹2,500 more expensive to change is usually the worse buy.
+ *
+ * NOTE: 0.25 is an ASSUMPTION, not a measurement. The nudge-benchmark research
+ * never ran (research.md §0), so this is a starting value to be calibrated
+ * against real change rates once the tool has history. It is configuration
+ * precisely so it can be corrected without a deploy.
+ */
+export interface RankingPolicy {
+  changeProbability: number;
 }
 
 /**
@@ -87,6 +114,79 @@ export interface Organisation {
 export interface GstRates {
   economy: number;
   premium: number;
+}
+
+// ---------------------------------------------------------------------------
+// Allocation — FR-ORG-4, FR-BOOK-1
+// ---------------------------------------------------------------------------
+
+export interface CostCentre {
+  code: string;
+  name: string;
+  active: boolean;
+}
+
+/**
+ * A consulting engagement. Travel is usually rebilled to the client, so the
+ * project code is what makes a booking recoverable rather than overhead.
+ */
+export interface Project {
+  code: string;
+  name: string;
+  clientName: string;
+  /** Whether travel on this project is rebilled to the client. */
+  clientBillable: boolean;
+  active: boolean;
+}
+
+/** Captured on every booking (FR-BOOK-1). */
+export interface Allocation {
+  projectCode: string;
+  costCentreCode: string;
+  clientBillable: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Policy — FR-POL-2, FR-POL-3
+// ---------------------------------------------------------------------------
+
+/**
+ * SOFT  — bookable, but the traveller must record a justification.
+ * HARD  — blocked outright.
+ *
+ * Most corporate policy is soft in practice: a blanket block on a legitimate
+ * late booking pushes people out of the tool entirely, which costs more than
+ * the overspend (the leakage problem in research.md's brief).
+ */
+export type PolicyEnforcement = 'SOFT' | 'HARD';
+
+export type PolicyRule =
+  | { kind: 'MAX_FARE'; enforcement: PolicyEnforcement; amount: number; cabin?: CabinClass }
+  | { kind: 'CABIN'; enforcement: PolicyEnforcement; allowed: CabinClass[] }
+  | { kind: 'ADVANCE_PURCHASE'; enforcement: PolicyEnforcement; minDays: number }
+  | { kind: 'PREFERRED_CARRIER'; enforcement: PolicyEnforcement; carriers: CarrierCode[] };
+
+export interface TravelPolicy {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  rules: PolicyRule[];
+}
+
+export interface PolicyBreach {
+  rule: PolicyRule['kind'];
+  enforcement: PolicyEnforcement;
+  message: string;
+}
+
+export interface PolicyEvaluation {
+  policyId: string;
+  compliant: boolean;
+  breaches: PolicyBreach[];
+  /** True when any breach is HARD — the offer cannot be booked at all. */
+  blocked: boolean;
+  /** True when a justification is required to proceed (soft breach only). */
+  requiresJustification: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +291,19 @@ export interface FareOffer {
   /** Set on corporate offers when a comparable retail offer exists (FR-DISP-1). */
   retailComparatorId?: string;
   savingVsRetail?: number;
+  /**
+   * Set on RETAIL offers when a corporate fare exists on the same flight.
+   * This is what makes FR-DISP-4 possible: choosing this offer means declining
+   * a corporate fare that was actually available, and that needs a reason.
+   */
+  corporateAlternativeId?: string;
+  corporateAlternativeSaving?: number;
+  /** Landed cost plus weighted change exposure — the sort key (FR-DISP-3). */
+  rankingScore?: number;
+  /** Human-readable reason this offer ranks where it does (FR-DISP-3). */
+  rankingReasons?: string[];
+  /** Policy verdict, attached at search time (FR-POL-2). */
+  policy?: PolicyEvaluation;
 }
 
 /**
@@ -305,7 +418,59 @@ export interface Booking {
   cancelledAt?: string;
   cancellationFee?: number;
   refundAmount?: number;
+  /**
+   * Why a retail fare was chosen when a corporate one was available (FR-DISP-4).
+   * Null when the question did not arise. Never silently absent when it did.
+   */
+  retailOverCorporate?: RetailOverCorporate;
+  /** Unused ticket value held with the carrier after cancellation (FR-SVC-3). */
+  creditShell?: CreditShell;
+  /** Both invoices, captured per booking (FR-GST-4). */
+  invoices: InvoiceRecord[];
+  /** Mandatory allocation (FR-BOOK-1). */
+  allocation: Allocation;
+  /** The policy verdict at the time of booking (FR-POL-2). */
+  policyEvaluation?: PolicyEvaluation;
+  /** Why an out-of-policy booking was allowed to proceed (FR-POL-3). */
+  policyJustification?: string;
   audit: AuditEntry[];
+}
+
+/** FR-DISP-4 — declining an available corporate fare is a recorded decision. */
+export interface RetailOverCorporate {
+  corporateOfferId: string;
+  forgoneSaving: number;
+  reason: string;
+  recordedAt: string;
+}
+
+/**
+ * FR-SVC-3 — a cancelled ticket usually leaves value with the carrier rather
+ * than returning cash. Untracked, that value silently expires.
+ */
+export interface CreditShell {
+  amount: number;
+  carrier: CarrierCode;
+  issuedAt: string;
+  expiresAt: string;
+  consumed: boolean;
+}
+
+/**
+ * FR-GST-4 — two invoices exist per booking and both are needed for full
+ * recovery: the AIRLINE's tax invoice for the fare (from which ITC on the fare
+ * flows) and the AGENT's invoice for service fees. research.md §5.4.
+ */
+export interface InvoiceRecord {
+  kind: 'AIRLINE_FARE' | 'AGENT_SERVICE_FEE';
+  invoiceNumber: string;
+  supplierGstin: string;
+  recipientGstin: string;
+  taxableValue: number;
+  gstRate: number;
+  gstAmount: number;
+  total: number;
+  issuedAt: string;
 }
 
 /** Per-booking savings record (spec.md §5). Feeds Stage 3 reporting. */

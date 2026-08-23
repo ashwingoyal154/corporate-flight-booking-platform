@@ -98,6 +98,46 @@ export class NameChangeUnsupportedError extends DomainError {
   }
 }
 
+/** FR-DISP-4 — declining an available corporate fare requires a recorded reason. */
+export class JustificationRequiredError extends DomainError {
+  constructor(forgoneSaving: number, corporateOfferId: string) {
+    super(
+      `A corporate fare was available on this flight. Choosing the retail fare forgoes a saving, ` +
+        `so a reason is required before booking.`,
+      'JUSTIFICATION_REQUIRED',
+      'FR-DISP-4',
+      422,
+      { forgoneSaving, corporateOfferId },
+    );
+  }
+}
+
+/** FR-POL-3 — a hard policy breach cannot be justified away. */
+export class PolicyBlockedError extends DomainError {
+  constructor(reasons: string[]) {
+    super(
+      `This fare cannot be booked: it breaches a mandatory travel policy rule.`,
+      'POLICY_BLOCKED',
+      'FR-POL-3',
+      422,
+      { reasons },
+    );
+  }
+}
+
+/** FR-POL-3 — a soft breach is bookable, with a recorded reason. */
+export class PolicyJustificationRequiredError extends DomainError {
+  constructor(reasons: string[]) {
+    super(
+      `This fare is out of policy. A justification is required before booking.`,
+      'POLICY_JUSTIFICATION_REQUIRED',
+      'FR-POL-3',
+      422,
+      { reasons },
+    );
+  }
+}
+
 export class NotFoundError extends DomainError {
   constructor(what: string, id: string) {
     super(`${what} not found: ${id}`, 'NOT_FOUND', '-', 404, { id });

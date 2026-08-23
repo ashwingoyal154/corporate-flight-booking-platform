@@ -3,7 +3,7 @@ import { seed } from '../src/store/seed.js';
 import { mockControl } from '../src/supply/mock/control.js';
 import { MockAdapter } from '../src/supply/mock/MockAdapter.js';
 import { SearchOrchestrator } from '../src/search/orchestrator.js';
-import type { SearchCriteria, Session } from '../src/domain/types.js';
+import type { FareOffer, FareType, SearchCriteria, Session } from '../src/domain/types.js';
 import { id } from '../src/domain/ids.js';
 
 export function resetWorld(): void {
@@ -52,6 +52,34 @@ export function newOrchestrator(provider = new MockAdapter()): {
 } {
   return { provider, orchestrator: new SearchOrchestrator(provider, store.getOrganisation()) };
 }
+
+/**
+ * Picks an offer that is actually bookable under the seeded default policy.
+ *
+ * Since Stage 4 the seeded policy marks non-preferred carriers as a SOFT breach,
+ * so the cheapest-ranked offer is often one that needs a justification. Tests
+ * about other concerns should not have to care, so they use this.
+ */
+export function pickBookable(
+  result: { offers: FareOffer[] },
+  opts: { fareType: FareType; needsCorporateAlternative?: boolean } = { fareType: 'CORPORATE' },
+): FareOffer {
+  const found = result.offers.find(
+    (o) =>
+      o.fareType === opts.fareType &&
+      (o.policy ? o.policy.compliant : true) &&
+      (!opts.needsCorporateAlternative || Boolean(o.corporateAlternativeId)),
+  );
+  if (!found) throw new Error(`No bookable ${opts.fareType} offer in search results`);
+  return found;
+}
+
+/** FR-BOOK-1 — allocation is mandatory on every booking. */
+export const ALLOCATION = {
+  projectCode: 'PRJ-4471',
+  costCentreCode: 'CC-CONS',
+  clientBillable: true,
+};
 
 export const PASSENGER = {
   firstName: 'Asha',

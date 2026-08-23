@@ -3,7 +3,7 @@ import { BookingService } from '../src/booking/bookingService.js';
 import { createHold } from '../src/booking/hold.js';
 import { issueMockToken } from '../src/booking/payment.js';
 import { store } from '../src/store/store.js';
-import { criteria, entityFor, makeSession, newOrchestrator, PASSENGER, resetWorld } from './helpers.js';
+import { criteria, entityFor, makeSession, newOrchestrator, PASSENGER, resetWorld, ALLOCATION, pickBookable} from './helpers.js';
 
 /**
  * FR-SRCH-5 / FR-BOOK-6 / FR-DISP-1 — the corporate fare evidence chain.
@@ -129,6 +129,7 @@ describe('FR-BOOK-6 — proof is persisted onto the booking', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
       idempotencyKey: 'idem_proof',
     });
 
@@ -145,7 +146,7 @@ describe('FR-BOOK-6 — proof is persisted onto the booking', () => {
     const session = makeSession();
     const entity = entityFor(session);
     const result = await orchestrator.search(criteria());
-    const offer = result.offers.find((o) => o.fareType === 'RETAIL')!;
+    const offer = pickBookable(result, { fareType: 'RETAIL', needsCorporateAlternative: true });
     const hold = createHold(offer, session.id);
 
     const { booking } = await new BookingService(provider).book({
@@ -154,6 +155,9 @@ describe('FR-BOOK-6 — proof is persisted onto the booking', () => {
       entity,
       passengers: [PASSENGER],
       paymentToken: issueMockToken(),
+      allocation: ALLOCATION,
+      // Stage 3 (FR-DISP-4): declining an available corporate fare needs a reason.
+      retailOverCorporateReason: 'proof fixture',
       idempotencyKey: 'idem_proof_retail',
     });
 

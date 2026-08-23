@@ -80,6 +80,22 @@ export class ServicingService {
     booking.cancelledAt = new Date().toISOString();
     booking.cancellationFee = result.cancellationFee;
     booking.refundAmount = result.refundAmount;
+
+    /**
+     * FR-SVC-3 — Indian carriers typically return value as a credit shell held
+     * with the airline rather than cash. Untracked, that value silently expires
+     * and the company pays twice. Validity is one year from issue.
+     */
+    if (result.refundAmount > 0) {
+      const issuedAt = booking.cancelledAt;
+      booking.creditShell = {
+        amount: result.refundAmount,
+        carrier: booking.offer.carrier,
+        issuedAt,
+        expiresAt: new Date(new Date(issuedAt).getTime() + 365 * 86_400_000).toISOString(),
+        consumed: false,
+      };
+    }
     booking.audit.push({
       at: booking.cancelledAt,
       actor,
@@ -90,6 +106,8 @@ export class ServicingService {
         refundAmount: result.refundAmount,
         // The ITC is reversed along with the fare — finance must not keep claiming it.
         itcReversed: booking.offer.landedCost.recoverableItc,
+        creditShellAmount: booking.creditShell?.amount ?? 0,
+        creditShellExpiresAt: booking.creditShell?.expiresAt ?? null,
       },
     });
     store.putBooking(booking);

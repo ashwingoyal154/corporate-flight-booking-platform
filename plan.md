@@ -40,6 +40,18 @@ else in Stage 1 is genuinely minimal.
 
 ---
 
+> ### Build status (2026-08-23)
+>
+> **Stages 1–4 are built, tested and running** against `MockAdapter` — 181 tests.
+>
+> **Stage 5 is blocked on `DEC-1`**, a commercial decision rather than an engineering one: every
+> Indian aggregator's API documentation is partner-gated, so it needs an NDA before a line of the
+> adapter can be written.
+>
+> **Stage 6 is deliberately unbuilt.** It contradicts `CON-10` (no authentication in v1), which is a
+> client constraint, not an oversight. The data model is already shaped for it — `Booking.ownerRef`
+> is nullable and the audit trail carries an actor — so it remains a backfill, not a rewrite.
+
 ## Stage map
 
 | # | Stage | The job it closes | Gated on |
