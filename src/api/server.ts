@@ -103,7 +103,7 @@ function requireEntity(session: Session) {
 // --- routes ------------------------------------------------------------------
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, provider: provider.name, stage: '1-2' });
+  res.json({ ok: true, provider: provider.name, stage: '1-4' });
 });
 
 app.get('/api/config', (_req, res) => {
