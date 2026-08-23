@@ -4,8 +4,14 @@ A corporate flight self-booking tool (SBT) for an India-based consulting firm: *
 ~200 business trips/month**, mostly domestic. Built to maximise **corporate fare capture** and
 **GST input tax credit recovery**.
 
+**Live demo: https://corporate-flight-booking.vercel.app**
+
 This repo is a **runnable prototype covering stages 1–4** of [`plan.md`](./plan.md), running against a
 **mock supply provider**. It is meant to be clicked through and evaluated early.
+
+> The deployed demo is public and its state is **shared and ephemeral**: everyone on the link sees the
+> same bookings, and a cold start resets to seeded data. Fine for fabricated demo data — and exactly
+> what a database behind the `Store` interface, plus authentication (Stage 6), would fix.
 
 | Document | What it is |
 |---|---|
@@ -258,29 +264,31 @@ forgetting it is a silent and total failure.
 Locally, with no `ADMIN_TOKEN` set, the gate stays open so development is frictionless. `/api/health`
 reports `adminGated` so the UI knows whether to prompt.
 
-### Vercel (config included)
+### Vercel (deployed; config included)
 
 ```bash
 npx vercel login
-npx vercel --prod
+npx vercel deploy --prod --yes
+
+# The deploy REFUSES to serve admin routes without a token:
+printf '%s' "$(openssl rand -hex 24)" | npx vercel env add ADMIN_TOKEN production
+npx vercel deploy --prod --yes   # redeploy so it takes effect
 ```
 
-Then set the admin token — the deploy will refuse to serve admin routes without it:
-
-```bash
-npx vercel env add ADMIN_TOKEN production   # paste: openssl rand -hex 24
-npx vercel --prod                           # redeploy so it takes effect
-```
-
-Two things about Vercel specifically, because it is serverless rather than a long-lived server:
+Three things about Vercel specifically, all of which cost a debugging round trip:
 
 - **The filesystem is read-only**, so the store runs in **memory mode** (`MEMORY_ONLY` in
   `src/store/store.ts`), seeded lazily on each cold start. State lives as long as the warm instance
-  and is not shared between instances — fine for a demo with fabricated data, and precisely what a
-  database behind the same `Store` interface would fix.
-- The function is a **catch-all route** (`api/[...path].ts`), not a rewrite. A `rewrites` rule
-  pointing `/api/(.*)` at one function hands Express the *rewritten* URL, so every route misses and
-  everything 404s. The catch-all preserves the original path.
+  and is not shared between instances.
+- **Build layout matters.** Vercel's Vite preset expects the site at `dist`, so the compiled server
+  goes to `build/server` instead. Declaring `buildCommand`/`outputDirectory` while the CLI also
+  auto-detects a *service* is rejected outright, and an `api/` directory is silently skipped when
+  services are configured.
+- **`api/[...path].ts` only matched one segment.** `/api/health` resolved while
+  `/api/reports/dashboard` 404'd. Routing is therefore declared explicitly in `vercel.json`, and
+  `api/server.ts` restores the real path from `x-vercel-original-path` — Express matches on
+  `req.url`, so a rewrite that collapses the path makes every route miss while the deployment still
+  looks healthy.
 
 ### Render (blueprint included)
 

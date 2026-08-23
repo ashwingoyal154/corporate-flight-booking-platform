@@ -19,6 +19,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/build ./build
 
 # The JSON store lives here. On an ephemeral filesystem this resets on redeploy,
 # which for a demo is a feature: every deploy starts from clean seeded data.
@@ -33,4 +34,4 @@ ENV PORT=3000
 
 # Seed on boot if the store is empty, then serve. `|| true` because a populated
 # store is a normal state, not an error.
-CMD ["sh", "-c", "node dist/server/store/seed.js || true; node dist/server/api/server.js"]
+CMD ["sh", "-c", "node build/server/store/seed.js || true; node build/server/api/server.js"]

@@ -8,7 +8,7 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2022"],
     "noEmit": false,
-    "outDir": "dist/server",
+    "outDir": "build/server",
     "rootDir": "src",
     "sourceMap": true,
     "declaration": false

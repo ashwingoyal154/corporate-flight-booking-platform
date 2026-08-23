@@ -644,7 +644,7 @@ app.post('/api/mock/control', requireAdmin, (req, res) => {
 
 // --- static web --------------------------------------------------------------
 
-const webDist = resolve(process.cwd(), 'dist', 'web');
+const webDist = resolve(process.cwd(), 'dist');
 if (existsSync(webDist)) {
   app.use(express.static(webDist));
   app.get('*', (_req, res) => res.sendFile(resolve(webDist, 'index.html')));
